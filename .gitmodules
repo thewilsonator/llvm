@@ -1,6 +1,6 @@
 [submodule "tools/llvm-spirv"]
 	path = tools/llvm-spirv
-	url = it://github.com/thewilsonator/llvm-tool-spirv.git
+	url = git://github.com/thewilsonator/llvm-tool-spirv.git
 [submodule "lib/Target/SPIRV"]
 	path = lib/Target/SPIRV
-	url = git://github.com/thewilsonator/llvm-target-spriv.git
+	url = git://github.com/thewilsonator/llvm-target-spirv.git
