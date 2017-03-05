@@ -657,7 +657,8 @@ void Verifier::visitGlobalVariable(const GlobalVariable &GV) {
     if (auto *GVE = dyn_cast<DIGlobalVariableExpression>(MD))
       visitDIGlobalVariableExpression(*GVE);
     else
-      AssertDI(false, "!dbg attachment of global variable must be a DIGlobalVariableExpression");
+      AssertDI(false, "!dbg attachment of global variable must be a "
+                      "DIGlobalVariableExpression");
   }
 
   if (!GV.hasInitializer()) {
@@ -1656,8 +1657,8 @@ void Verifier::verifyFunctionMetadata(
   for (const auto &Pair : MDs) {
     if (Pair.first == LLVMContext::MD_prof) {
       MDNode *MD = Pair.second;
-      Assert(MD->getNumOperands() == 2,
-             "!prof annotations should have exactly 2 operands", MD);
+      Assert(MD->getNumOperands() >= 2,
+             "!prof annotations should have no less than 2 operands", MD);
 
       // Check first operand.
       Assert(MD->getOperand(0) != nullptr, "first operand should not be null",

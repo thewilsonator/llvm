@@ -259,6 +259,11 @@ computeFunctionSummary(ModuleSummaryIndex &Index, const Module &M,
       }
     }
 
+  // Explicit add hot edges to enforce importing for designated GUIDs for
+  // sample PGO, to enable the same inlines as the profiled optimized binary.
+  for (auto &I : F.getImportGUIDs())
+    CallGraphEdges[I].updateHotness(CalleeInfo::HotnessType::Hot);
+
   bool NonRenamableLocal = isNonRenamableLocal(F);
   bool NotEligibleForImport =
       NonRenamableLocal || HasInlineAsmMaybeReferencingInternal ||
@@ -447,6 +452,12 @@ ModuleSummaryIndex llvm::buildModuleSummaryIndex(
     auto &Summary = GlobalList.second[0];
     bool AllRefsCanBeExternallyReferenced =
         llvm::all_of(Summary->refs(), [&](const ValueInfo &VI) {
+          // If a global value definition references an unnamed global,
+          // be conservative. They're valid IR so we don't want to crash
+          // when we encounter any of them but they're infrequent enough
+          // that we don't bother optimizing them.
+          if (!VI.getValue()->hasName())
+            return false;
           return !CantBePromoted.count(VI.getValue()->getGUID());
         });
     if (!AllRefsCanBeExternallyReferenced) {

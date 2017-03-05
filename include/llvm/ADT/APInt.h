@@ -147,7 +147,7 @@ class LLVM_NODISCARD APInt {
       return *this;
 
     // Mask out the high bits.
-    uint64_t mask = ~uint64_t(0ULL) >> (APINT_BITS_PER_WORD - wordBits);
+    uint64_t mask = UINT64_MAX >> (APINT_BITS_PER_WORD - wordBits);
     if (isSingleWord())
       VAL &= mask;
     else
@@ -240,11 +240,12 @@ public:
   APInt(unsigned numBits, uint64_t val, bool isSigned = false)
       : BitWidth(numBits), VAL(0) {
     assert(BitWidth && "bitwidth too small");
-    if (isSingleWord())
+    if (isSingleWord()) {
       VAL = val;
-    else
+      clearUnusedBits();
+    } else {
       initSlowCase(val, isSigned);
-    clearUnusedBits();
+    }
   }
 
   /// \brief Construct an APInt of numBits width, initialized as bigVal[].
@@ -341,7 +342,7 @@ public:
   /// This checks to see if the value has all bits of the APInt are set or not.
   bool isAllOnesValue() const {
     if (isSingleWord())
-      return VAL == ~integerPart(0) >> (APINT_BITS_PER_WORD - BitWidth);
+      return VAL == UINT64_MAX >> (APINT_BITS_PER_WORD - BitWidth);
     return countPopulationSlowCase() == BitWidth;
   }
 
@@ -406,7 +407,7 @@ public:
 
   /// If this value is smaller than the specified limit, return it, otherwise
   /// return the limit value.  This causes the value to saturate to the limit.
-  uint64_t getLimitedValue(uint64_t Limit = ~0ULL) const {
+  uint64_t getLimitedValue(uint64_t Limit = UINT64_MAX) const {
     return (getActiveBits() > 64 || getZExtValue() > Limit) ? Limit
                                                             : getZExtValue();
   }
@@ -523,7 +524,7 @@ public:
     unsigned shiftAmt = numBits - hiBitsSet;
     // For small values, return quickly
     if (numBits <= APINT_BITS_PER_WORD)
-      return APInt(numBits, ~0ULL << shiftAmt);
+      return APInt(numBits, UINT64_MAX << shiftAmt);
     return getAllOnesValue(numBits).shl(shiftAmt);
   }
 
@@ -538,8 +539,6 @@ public:
     // Handle a degenerate case, to avoid shifting by word size
     if (loBitsSet == 0)
       return APInt(numBits, 0);
-    if (loBitsSet == APINT_BITS_PER_WORD)
-      return APInt(numBits, UINT64_MAX);
     // For small values, return quickly.
     if (loBitsSet <= APINT_BITS_PER_WORD)
       return APInt(numBits, UINT64_MAX >> (APINT_BITS_PER_WORD - loBitsSet));
@@ -1239,6 +1238,9 @@ public:
   /// Set the given bit to 1 whose position is given as "bitPosition".
   void setBit(unsigned bitPosition);
 
+  /// Set the bits from loBit (inclusive) to hiBit (exclusive) to 1.
+  void setBits(unsigned loBit, unsigned hiBit);
+
   /// \brief Set every bit to 0.
   void clearAllBits() {
     if (isSingleWord())
@@ -1268,6 +1270,9 @@ public:
   /// Toggle a given bit to its opposite value whose position is given
   /// as "bitPosition".
   void flipBit(unsigned bitPosition);
+
+  /// Return an APInt with the extracted bits [bitPosition,bitPosition+numBits).
+  APInt extractBits(unsigned numBits, unsigned bitPosition) const;
 
   /// @}
   /// \name Value Characterization Functions

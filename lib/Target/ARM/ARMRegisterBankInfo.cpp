@@ -181,6 +181,7 @@ const RegisterBank &ARMRegisterBankInfo::getRegBankFromRegClass(
   case GPRRegClassID:
   case GPRnopcRegClassID:
   case tGPR_and_tcGPRRegClassID:
+  case tGPRRegClassID:
     return getRegBank(ARM::GPRRegBankID);
   case SPR_8RegClassID:
   case SPRRegClassID:
@@ -219,11 +220,13 @@ ARMRegisterBankInfo::getInstrMapping(const MachineInstr &MI) const {
   case G_ADD:
   case G_SEXT:
   case G_ZEXT:
+  case G_GEP:
     // FIXME: We're abusing the fact that everything lives in a GPR for now; in
     // the real world we would use different mappings.
     OperandsMapping = &ARM::ValueMappings[ARM::GPR3OpsIdx];
     break;
   case G_LOAD:
+  case G_STORE:
     OperandsMapping =
         Ty.getSizeInBits() == 64
             ? getOperandsMapping({&ARM::ValueMappings[ARM::DPR3OpsIdx],
@@ -237,6 +240,7 @@ ARMRegisterBankInfo::getInstrMapping(const MachineInstr &MI) const {
                           ? &ARM::ValueMappings[ARM::DPR3OpsIdx]
                           : &ARM::ValueMappings[ARM::SPR3OpsIdx];
     break;
+  case G_CONSTANT:
   case G_FRAME_INDEX:
     OperandsMapping =
         getOperandsMapping({&ARM::ValueMappings[ARM::GPR3OpsIdx], nullptr});

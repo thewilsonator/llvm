@@ -38,39 +38,6 @@ class SCEVUnionPredicate;
 class LoopAccessInfo;
 class OptimizationRemarkEmitter;
 
-/// Optimization analysis message produced during vectorization. Messages inform
-/// the user why vectorization did not occur.
-class LoopAccessReport {
-  std::string Message;
-  const Instruction *Instr;
-
-protected:
-  LoopAccessReport(const Twine &Message, const Instruction *I)
-      : Message(Message.str()), Instr(I) {}
-
-public:
-  LoopAccessReport(const Instruction *I = nullptr) : Instr(I) {}
-
-  template <typename A> LoopAccessReport &operator<<(const A &Value) {
-    raw_string_ostream Out(Message);
-    Out << Value;
-    return *this;
-  }
-
-  const Instruction *getInstr() const { return Instr; }
-
-  std::string &str() { return Message; }
-  const std::string &str() const { return Message; }
-  operator Twine() { return Message; }
-
-  /// \brief Emit an analysis note for \p PassName with the debug location from
-  /// the instruction in \p Message if available.  Otherwise use the location of
-  /// \p TheLoop.
-  static void emitAnalysis(const LoopAccessReport &Message, const Loop *TheLoop,
-                           const char *PassName,
-                           OptimizationRemarkEmitter &ORE);
-};
-
 /// \brief Collection of parameters shared beetween the Loop Vectorizer and the
 /// Loop Access Analysis.
 struct VectorizerParams {
@@ -693,12 +660,15 @@ int64_t getPtrStride(PredicatedScalarEvolution &PSE, Value *Ptr, const Loop *Lp,
 /// \brief Try to sort an array of loads / stores.
 ///
 /// An array of loads / stores can only be sorted if all pointer operands
-/// refer to the same object, and the differences between these pointers 
+/// refer to the same object, and the differences between these pointers
 /// are known to be constant. If that is the case, this returns true, and the
 /// sorted array is returned in \p Sorted. Otherwise, this returns false, and
 /// \p Sorted is invalid.
+//  If \p Mask is not null, it also returns the \p Mask which is the shuffle
+//  mask for actual memory access order.
 bool sortMemAccesses(ArrayRef<Value *> VL, const DataLayout &DL,
-                     ScalarEvolution &SE, SmallVectorImpl<Value *> &Sorted);
+                     ScalarEvolution &SE, SmallVectorImpl<Value *> &Sorted,
+                     SmallVectorImpl<unsigned> *Mask = nullptr);
 
 /// \brief Returns true if the memory operations \p A and \p B are consecutive.
 /// This is a simple API that does not depend on the analysis pass. 

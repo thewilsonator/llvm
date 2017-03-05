@@ -76,6 +76,7 @@
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/DebugCounter.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVNExpression.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -103,7 +104,8 @@ STATISTIC(NumGVNAvoidedSortedLeaderChanges,
 STATISTIC(NumGVNNotMostDominatingLeader,
           "Number of times a member dominated it's new classes' leader");
 STATISTIC(NumGVNDeadStores, "Number of redundant/dead stores eliminated");
-
+DEBUG_COUNTER(VNCounter, "newgvn-vn",
+              "Controls which instructions are value numbered")
 //===----------------------------------------------------------------------===//
 //                                GVN Pass
 //===----------------------------------------------------------------------===//
@@ -287,6 +289,8 @@ class NewGVN : public FunctionPass {
   // Deletion info.
   SmallPtrSet<Instruction *, 8> InstructionsToErase;
 
+  // The set of things we gave unknown expressions to due to debug counting.
+  SmallPtrSet<Instruction *, 8> DebugUnknownExprs;
 public:
   static char ID; // Pass identification, replacement for typeid.
   NewGVN() : FunctionPass(ID) {
@@ -855,15 +859,19 @@ NewGVN::performSymbolicPredicateInfoEvaluation(Instruction *I) {
     return nullptr;
 
   DEBUG(dbgs() << "Found predicate info from instruction !\n");
-  auto *CopyOf = I->getOperand(0);
-  auto *Cond = dyn_cast<Instruction>(PI->Condition);
-  if (!Cond)
+
+  auto *PWC = dyn_cast<PredicateWithCondition>(PI);
+  if (!PWC)
     return nullptr;
+
+  auto *CopyOf = I->getOperand(0);
+  auto *Cond = PWC->Condition;
 
   // If this a copy of the condition, it must be either true or false depending
   // on the predicate info type and edge
   if (CopyOf == Cond) {
-    addPredicateUsers(PI, I);
+    // We should not need to add predicate users because the predicate info is
+    // already a use of this operand.
     if (isa<PredicateAssume>(PI))
       return createConstantExpression(ConstantInt::getTrue(Cond->getType()));
     if (auto *PBranch = dyn_cast<PredicateBranch>(PI)) {
@@ -871,32 +879,36 @@ NewGVN::performSymbolicPredicateInfoEvaluation(Instruction *I) {
         return createConstantExpression(ConstantInt::getTrue(Cond->getType()));
       return createConstantExpression(ConstantInt::getFalse(Cond->getType()));
     }
+    if (auto *PSwitch = dyn_cast<PredicateSwitch>(PI))
+      return createConstantExpression(cast<Constant>(PSwitch->CaseValue));
   }
-  // Not a copy of the condition, so see what the predicates tell us about this
-  // value.
+
   // Not a copy of the condition, so see what the predicates tell us about this
   // value.  First, though, we check to make sure the value is actually a copy
   // of one of the condition operands. It's possible, in certain cases, for it
   // to be a copy of a predicateinfo copy. In particular, if two branch
   // operations use the same condition, and one branch dominates the other, we
   // will end up with a copy of a copy.  This is currently a small deficiency in
-  // predicateinfo.   What will end up happening here is that we will value
+  // predicateinfo.  What will end up happening here is that we will value
   // number both copies the same anyway.
-  if (CopyOf != Cond->getOperand(0) && CopyOf != Cond->getOperand(1)) {
+
+  // Everything below relies on the condition being a comparison.
+  auto *Cmp = dyn_cast<CmpInst>(Cond);
+  if (!Cmp)
+    return nullptr;
+
+  if (CopyOf != Cmp->getOperand(0) && CopyOf != Cmp->getOperand(1)) {
     DEBUG(dbgs() << "Copy is not of any condition operands!");
     return nullptr;
   }
-  Value *FirstOp = lookupOperandLeader(Cond->getOperand(0));
-  Value *SecondOp = lookupOperandLeader(Cond->getOperand(1));
+  Value *FirstOp = lookupOperandLeader(Cmp->getOperand(0));
+  Value *SecondOp = lookupOperandLeader(Cmp->getOperand(1));
   bool SwappedOps = false;
   // Sort the ops
   if (shouldSwapOperands(FirstOp, SecondOp)) {
     std::swap(FirstOp, SecondOp);
     SwappedOps = true;
   }
-
-  // Everything below relies on the condition being a comparison.
-  auto *Cmp = dyn_cast<CmpInst>(Cond);
   CmpInst::Predicate Predicate =
       SwappedOps ? Cmp->getSwappedPredicate() : Cmp->getPredicate();
 
@@ -1088,14 +1100,13 @@ const Expression *NewGVN::performSymbolicCmpEvaluation(Instruction *I) {
   auto Op0 = lookupOperandLeader(CI->getOperand(0));
   auto Op1 = lookupOperandLeader(CI->getOperand(1));
   auto OurPredicate = CI->getPredicate();
-  if (shouldSwapOperands(Op1, Op0)) {
+  if (shouldSwapOperands(Op0, Op1)) {
     std::swap(Op0, Op1);
     OurPredicate = CI->getSwappedPredicate();
   }
 
   // Avoid processing the same info twice
   const PredicateBase *LastPredInfo = nullptr;
-
   // See if we know something about the comparison itself, like it is the target
   // of an assume.
   auto *CmpPI = PredInfo->getPredicateInfoFor(I);
@@ -1141,6 +1152,7 @@ const Expression *NewGVN::performSymbolicCmpEvaluation(Instruction *I) {
       if (PI == LastPredInfo)
         continue;
       LastPredInfo = PI;
+
       // TODO: Along the false edge, we may know more things too, like icmp of
       // same operands is false.
       // TODO: We only handle actual comparison conditions below, not and/or.
@@ -1150,7 +1162,7 @@ const Expression *NewGVN::performSymbolicCmpEvaluation(Instruction *I) {
       auto *BranchOp0 = lookupOperandLeader(BranchCond->getOperand(0));
       auto *BranchOp1 = lookupOperandLeader(BranchCond->getOperand(1));
       auto BranchPredicate = BranchCond->getPredicate();
-      if (shouldSwapOperands(BranchOp1, BranchOp0)) {
+      if (shouldSwapOperands(BranchOp0, BranchOp1)) {
         std::swap(BranchOp0, BranchOp1);
         BranchPredicate = BranchCond->getSwappedPredicate();
       }
@@ -1700,13 +1712,13 @@ void NewGVN::cleanupTables() {
 #endif
   InstrDFS.clear();
   InstructionsToErase.clear();
-
   DFSToInstr.clear();
   BlockInstRange.clear();
   TouchedInstructions.clear();
   DominatedInstRange.clear();
   MemoryAccessToClass.clear();
   PredicateToUsers.clear();
+  DebugUnknownExprs.clear();
 }
 
 std::pair<unsigned, unsigned> NewGVN::assignDFSNumbers(BasicBlock *B,
@@ -1788,7 +1800,6 @@ void NewGVN::valueNumberMemoryPhi(MemoryPhi *MP) {
 // congruence finding, and updating mappings.
 void NewGVN::valueNumberInstruction(Instruction *I) {
   DEBUG(dbgs() << "Processing instruction " << *I << "\n");
-
   // There's no need to call isInstructionTriviallyDead more than once on
   // an instruction. Therefore, once we know that an instruction is dead
   // we change its DFS number so that it doesn't get numbered again.
@@ -1799,7 +1810,14 @@ void NewGVN::valueNumberInstruction(Instruction *I) {
     return;
   }
   if (!I->isTerminator()) {
-    const auto *Symbolized = performSymbolicEvaluation(I);
+    const Expression *Symbolized = nullptr;
+    if (DebugCounter::shouldExecute(VNCounter)) {
+      Symbolized = performSymbolicEvaluation(I);
+    } else {
+      // Used to track which we marked unknown so we can skip verification of
+      // comparisons.
+      DebugUnknownExprs.insert(I);
+    }
     // If we couldn't come up with a symbolic expression, use the unknown
     // expression
     if (Symbolized == nullptr)
@@ -1915,7 +1933,7 @@ void NewGVN::verifyComparisons(Function &F) {
     if (!ReachableBlocks.count(&BB))
       continue;
     for (auto &I : BB) {
-      if (InstructionsToErase.count(&I))
+      if (InstructionsToErase.count(&I) || DebugUnknownExprs.count(&I))
         continue;
       if (isa<CmpInst>(&I)) {
         auto *CurrentVal = ValueToClass.lookup(&I);

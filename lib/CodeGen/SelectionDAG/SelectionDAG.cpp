@@ -2419,6 +2419,20 @@ void SelectionDAG::computeKnownBits(SDValue Op, APInt &KnownZero,
     }
     break;
   }
+  case ISD::ZERO_EXTEND_VECTOR_INREG: {
+    EVT InVT = Op.getOperand(0).getValueType();
+    unsigned InBits = InVT.getScalarSizeInBits();
+    APInt NewBits   = APInt::getHighBitsSet(BitWidth, BitWidth - InBits);
+    KnownZero = KnownZero.trunc(InBits);
+    KnownOne = KnownOne.trunc(InBits);
+    computeKnownBits(Op.getOperand(0), KnownZero, KnownOne,
+                     DemandedElts.zext(InVT.getVectorNumElements()),
+                     Depth + 1);
+    KnownZero = KnownZero.zext(BitWidth);
+    KnownOne = KnownOne.zext(BitWidth);
+    KnownZero |= NewBits;
+    break;
+  }
   case ISD::ZERO_EXTEND: {
     EVT InVT = Op.getOperand(0).getValueType();
     unsigned InBits = InVT.getScalarSizeInBits();
@@ -2432,6 +2446,7 @@ void SelectionDAG::computeKnownBits(SDValue Op, APInt &KnownZero,
     KnownZero |= NewBits;
     break;
   }
+  // TODO ISD::SIGN_EXTEND_VECTOR_INREG
   case ISD::SIGN_EXTEND: {
     EVT InVT = Op.getOperand(0).getValueType();
     unsigned InBits = InVT.getScalarSizeInBits();
@@ -2775,6 +2790,19 @@ SelectionDAG::OverflowKind SelectionDAG::computeOverflowKind(SDValue N0,
       return OFK_Never;
   }
 
+  // mulhi + 1 never overflow
+  if (N0.getOpcode() == ISD::UMUL_LOHI && N0.getResNo() == 1 &&
+      (~N1Zero & 0x01) == ~N1Zero)
+    return OFK_Never;
+
+  if (N1.getOpcode() == ISD::UMUL_LOHI && N1.getResNo() == 1) {
+    APInt N0Zero, N0One;
+    computeKnownBits(N0, N0Zero, N0One);
+
+    if ((~N0Zero & 0x01) == ~N0Zero)
+      return OFK_Never;
+  }
+
   return OFK_Sometime;
 }
 
@@ -2846,6 +2874,7 @@ unsigned SelectionDAG::ComputeNumSignBits(SDValue Op, unsigned Depth) const {
   }
 
   case ISD::SIGN_EXTEND:
+  case ISD::SIGN_EXTEND_VECTOR_INREG:
     Tmp = VTBits - Op.getOperand(0).getScalarValueSizeInBits();
     return ComputeNumSignBits(Op.getOperand(0), Depth+1) + Tmp;
 
@@ -7486,7 +7515,7 @@ bool BuildVectorSDNode::isConstantSplat(APInt &SplatValue,
     unsigned BitPos = j * EltBitSize;
 
     if (OpVal.isUndef())
-      SplatUndef |= APInt::getBitsSet(sz, BitPos, BitPos + EltBitSize);
+      SplatUndef.setBits(BitPos, BitPos + EltBitSize);
     else if (ConstantSDNode *CN = dyn_cast<ConstantSDNode>(OpVal))
       SplatValue |= CN->getAPIntValue().zextOrTrunc(EltBitSize).
                     zextOrTrunc(sz) << BitPos;

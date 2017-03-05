@@ -74,15 +74,19 @@ public:
     TrapHandlerAbiHsa = 1
   };
 
-  enum TrapCode {
-    TrapCodeBreakPoint = 0,
-    TrapCodeLLVMTrap = 1,
-    TrapCodeLLVMDebugTrap = 2,
-    TrapCodeHSADebugTrap = 3
+  enum TrapID {
+    TrapIDHardwareReserved = 0,
+    TrapIDHSADebugTrap = 1,
+    TrapIDLLVMTrap = 2,
+    TrapIDLLVMDebugTrap = 3,
+    TrapIDDebugBreakpoint = 7,
+    TrapIDDebugReserved8 = 8,
+    TrapIDDebugReservedFE = 0xfe,
+    TrapIDDebugReservedFF = 0xff
   };
 
   enum TrapRegValues {
-    TrapCodeLLVMTrapRegValue = 1
+    LLVMTrapHandlerRegValue = 1
   };
 
 protected:
@@ -132,6 +136,7 @@ protected:
   bool SGPRInitBug;
   bool HasSMemRealTime;
   bool Has16BitInsts;
+  bool HasVOP3PInsts;
   bool HasMovrel;
   bool HasVGPRIndexMode;
   bool HasScalarStores;
@@ -212,6 +217,10 @@ public:
     return Has16BitInsts;
   }
 
+  bool hasVOP3PInsts() const {
+    return HasVOP3PInsts;
+  }
+
   bool hasHWFP64() const {
     return FP64;
   }
@@ -265,6 +274,10 @@ public:
 
   bool hasFFBH() const {
     return (getGeneration() >= EVERGREEN);
+  }
+
+  bool hasMed3_16() const {
+    return getGeneration() >= GFX9;
   }
 
   bool hasCARRY() const {

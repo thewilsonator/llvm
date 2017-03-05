@@ -1716,20 +1716,21 @@ def : InstAlias<"cvtsd2si{q}\t{$src, $dst|$dst, $src}",
 // Convert scalar double to scalar single
 let hasSideEffects = 0, Predicates = [UseAVX] in {
 def VCVTSD2SSrr  : VSDI<0x5A, MRMSrcReg, (outs FR32:$dst),
-                       (ins FR64:$src1, FR64:$src2),
+                       (ins FR32:$src1, FR64:$src2),
                       "cvtsd2ss\t{$src2, $src1, $dst|$dst, $src1, $src2}", [],
                       IIC_SSE_CVT_Scalar_RR>, VEX_4V, VEX_LIG,
                       Sched<[WriteCvtF2F]>, VEX_WIG;
 let mayLoad = 1 in
 def VCVTSD2SSrm  : I<0x5A, MRMSrcMem, (outs FR32:$dst),
-                       (ins FR64:$src1, f64mem:$src2),
+                       (ins FR32:$src1, f64mem:$src2),
                       "vcvtsd2ss\t{$src2, $src1, $dst|$dst, $src1, $src2}",
                       [], IIC_SSE_CVT_Scalar_RM>,
                       XD, Requires<[HasAVX, OptForSize]>, VEX_4V, VEX_LIG,
                       Sched<[WriteCvtF2FLd, ReadAfterLd]>, VEX_WIG;
 }
 
-def : Pat<(f32 (fpround FR64:$src)), (VCVTSD2SSrr FR64:$src, FR64:$src)>,
+def : Pat<(f32 (fpround FR64:$src)), 
+            (VCVTSD2SSrr (COPY_TO_REGCLASS FR64:$src, FR32), FR64:$src)>,
           Requires<[UseAVX]>;
 
 def CVTSD2SSrr  : SDI<0x5A, MRMSrcReg, (outs FR32:$dst), (ins FR64:$src),
@@ -1781,14 +1782,14 @@ def Int_CVTSD2SSrm: I<0x5A, MRMSrcMem,
 // SSE2 instructions with XS prefix
 let hasSideEffects = 0, Predicates = [UseAVX] in {
 def VCVTSS2SDrr : I<0x5A, MRMSrcReg, (outs FR64:$dst),
-                    (ins FR32:$src1, FR32:$src2),
+                    (ins FR64:$src1, FR32:$src2),
                     "vcvtss2sd\t{$src2, $src1, $dst|$dst, $src1, $src2}",
                     [], IIC_SSE_CVT_Scalar_RR>,
                     XS, Requires<[HasAVX]>, VEX_4V, VEX_LIG,
                     Sched<[WriteCvtF2F]>, VEX_WIG;
 let mayLoad = 1 in
 def VCVTSS2SDrm : I<0x5A, MRMSrcMem, (outs FR64:$dst),
-                    (ins FR32:$src1, f32mem:$src2),
+                    (ins FR64:$src1, f32mem:$src2),
                     "vcvtss2sd\t{$src2, $src1, $dst|$dst, $src1, $src2}",
                     [], IIC_SSE_CVT_Scalar_RM>,
                     XS, VEX_4V, VEX_LIG, Requires<[HasAVX, OptForSize]>,
@@ -1796,15 +1797,15 @@ def VCVTSS2SDrm : I<0x5A, MRMSrcMem, (outs FR64:$dst),
 }
 
 def : Pat<(f64 (fpextend FR32:$src)),
-    (VCVTSS2SDrr FR32:$src, FR32:$src)>, Requires<[UseAVX]>;
+    (VCVTSS2SDrr (COPY_TO_REGCLASS FR32:$src, FR64), FR32:$src)>, Requires<[UseAVX]>;
 def : Pat<(fpextend (loadf32 addr:$src)),
-    (VCVTSS2SDrm (f32 (IMPLICIT_DEF)), addr:$src)>, Requires<[UseAVX]>;
+    (VCVTSS2SDrm (f64 (IMPLICIT_DEF)), addr:$src)>, Requires<[UseAVX]>;
 
 def : Pat<(extloadf32 addr:$src),
-    (VCVTSS2SDrm (f32 (IMPLICIT_DEF)), addr:$src)>,
+    (VCVTSS2SDrm (f64 (IMPLICIT_DEF)), addr:$src)>,
     Requires<[UseAVX, OptForSize]>;
 def : Pat<(extloadf32 addr:$src),
-    (VCVTSS2SDrr (f32 (IMPLICIT_DEF)), (VMOVSSrm addr:$src))>,
+    (VCVTSS2SDrr (f64 (IMPLICIT_DEF)), (VMOVSSrm addr:$src))>,
     Requires<[UseAVX, OptForSpeed]>;
 
 def CVTSS2SDrr : I<0x5A, MRMSrcReg, (outs FR64:$dst), (ins FR32:$src),
@@ -2307,10 +2308,12 @@ multiclass sse12_cmp_scalar<RegisterClass RC, X86MemOperand x86memop,
   }
 }
 
+let ExeDomain = SSEPackedSingle in
 defm VCMPSS : sse12_cmp_scalar<FR32, f32mem, AVXCC, X86cmps, f32, loadf32,
                  "cmp${cc}ss\t{$src2, $src1, $dst|$dst, $src1, $src2}",
                  "cmpss\t{$cc, $src2, $src1, $dst|$dst, $src1, $src2, $cc}",
                  SSE_ALU_F32S, i8immZExt5>, XS, VEX_4V, VEX_LIG, VEX_WIG;
+let ExeDomain = SSEPackedDouble in
 defm VCMPSD : sse12_cmp_scalar<FR64, f64mem, AVXCC, X86cmps, f64, loadf64,
                  "cmp${cc}sd\t{$src2, $src1, $dst|$dst, $src1, $src2}",
                  "cmpsd\t{$cc, $src2, $src1, $dst|$dst, $src1, $src2, $cc}",
@@ -2318,10 +2321,12 @@ defm VCMPSD : sse12_cmp_scalar<FR64, f64mem, AVXCC, X86cmps, f64, loadf64,
                  XD, VEX_4V, VEX_LIG, VEX_WIG;
 
 let Constraints = "$src1 = $dst" in {
+  let ExeDomain = SSEPackedSingle in
   defm CMPSS : sse12_cmp_scalar<FR32, f32mem, SSECC, X86cmps, f32, loadf32,
                   "cmp${cc}ss\t{$src2, $dst|$dst, $src2}",
                   "cmpss\t{$cc, $src2, $dst|$dst, $src2, $cc}", SSE_ALU_F32S,
                   i8immZExt3>, XS;
+  let ExeDomain = SSEPackedDouble in
   defm CMPSD : sse12_cmp_scalar<FR64, f64mem, SSECC, X86cmps, f64, loadf64,
                   "cmp${cc}sd\t{$src2, $dst|$dst, $src2}",
                   "cmpsd\t{$cc, $src2, $dst|$dst, $src2, $cc}",
@@ -2347,18 +2352,22 @@ multiclass sse12_cmp_scalar_int<Operand memop, Operand CC,
 
 let isCodeGenOnly = 1 in {
   // Aliases to match intrinsics which expect XMM operand(s).
+  let ExeDomain = SSEPackedSingle in
   defm Int_VCMPSS  : sse12_cmp_scalar_int<ssmem, AVXCC, int_x86_sse_cmp_ss,
                        "cmp${cc}ss\t{$src, $src1, $dst|$dst, $src1, $src}",
                        SSE_ALU_F32S, i8immZExt5, sse_load_f32>,
                        XS, VEX_4V;
+  let ExeDomain = SSEPackedDouble in
   defm Int_VCMPSD  : sse12_cmp_scalar_int<sdmem, AVXCC, int_x86_sse2_cmp_sd,
                        "cmp${cc}sd\t{$src, $src1, $dst|$dst, $src1, $src}",
                        SSE_ALU_F32S, i8immZExt5, sse_load_f64>, // same latency as f32
                        XD, VEX_4V;
   let Constraints = "$src1 = $dst" in {
+    let ExeDomain = SSEPackedSingle in
     defm Int_CMPSS  : sse12_cmp_scalar_int<ssmem, SSECC, int_x86_sse_cmp_ss,
                          "cmp${cc}ss\t{$src, $dst|$dst, $src}",
                          SSE_ALU_F32S, i8immZExt3, sse_load_f32>, XS;
+    let ExeDomain = SSEPackedDouble in
     defm Int_CMPSD  : sse12_cmp_scalar_int<sdmem, SSECC, int_x86_sse2_cmp_sd,
                          "cmp${cc}sd\t{$src, $dst|$dst, $src}",
                          SSE_ALU_F64S, i8immZExt3, sse_load_f64>,
@@ -3332,7 +3341,7 @@ multiclass sse_fp_unop_s<bits<8> opc, string OpcodeStr, RegisterClass RC,
             Sched<[itins.Sched.Folded, ReadAfterLd]>,
             Requires<[target, OptForSize]>;
 
-  let isCodeGenOnly = 1, Constraints = "$src1 = $dst" in {
+  let isCodeGenOnly = 1, Constraints = "$src1 = $dst", ExeDomain = d in {
   def r_Int : I<opc, MRMSrcReg, (outs VR128:$dst), (ins VR128:$src1, VR128:$src2),
               !strconcat(OpcodeStr, "\t{$src2, $dst|$dst, $src2}"),
             []>, Sched<[itins.Sched.Folded, ReadAfterLd]>;
@@ -3376,7 +3385,7 @@ multiclass avx_fp_unop_s<bits<8> opc, string OpcodeStr, RegisterClass RC,
   def m : I<opc, MRMSrcMem, (outs RC:$dst), (ins RC:$src1, x86memop:$src2),
              !strconcat(OpcodeStr, "\t{$src2, $src1, $dst|$dst, $src1, $src2}"),
             [], itins.rm, d>, Sched<[itins.Sched.Folded, ReadAfterLd]>;
-  let isCodeGenOnly = 1 in {
+  let isCodeGenOnly = 1, ExeDomain = d in {
   def r_Int : I<opc, MRMSrcReg, (outs VR128:$dst),
                 (ins VR128:$src1, VR128:$src2),
              !strconcat(OpcodeStr, "\t{$src2, $src1, $dst|$dst, $src1, $src2}"),
@@ -5954,12 +5963,12 @@ multiclass SS41I_pmovx_patterns<string OpcPrefix, string ExtTy,
   }
 }
 
-defm : SS41I_pmovx_patterns<"VPMOVSX", "s", X86vsext, extloadi32i16>;
-defm : SS41I_pmovx_patterns<"VPMOVZX", "z", X86vzext, loadi16_anyext>;
+defm : SS41I_pmovx_patterns<"VPMOVSX", "s", sext_invec, extloadi32i16>;
+defm : SS41I_pmovx_patterns<"VPMOVZX", "z", zext_invec, loadi16_anyext>;
 
 let Predicates = [UseSSE41] in {
-  defm : SS41I_pmovx_patterns<"PMOVSX", "s", X86vsext, extloadi32i16>;
-  defm : SS41I_pmovx_patterns<"PMOVZX", "z", X86vzext, loadi16_anyext>;
+  defm : SS41I_pmovx_patterns<"PMOVSX", "s", sext_invec, extloadi32i16>;
+  defm : SS41I_pmovx_patterns<"PMOVZX", "z", zext_invec, loadi16_anyext>;
 }
 
 //===----------------------------------------------------------------------===//
