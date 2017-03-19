@@ -175,6 +175,8 @@ void MIRPrinter::print(const MachineFunction &MF) {
   YamlMF.Alignment = MF.getAlignment();
   YamlMF.ExposesReturnsTwice = MF.exposesReturnsTwice();
 
+  YamlMF.NoVRegs = MF.getProperties().hasProperty(
+      MachineFunctionProperties::Property::NoVRegs);
   YamlMF.Legalized = MF.getProperties().hasProperty(
       MachineFunctionProperties::Property::Legalized);
   YamlMF.RegBankSelected = MF.getProperties().hasProperty(
@@ -906,6 +908,9 @@ void MIPrinter::print(const MachineOperand &Op, const TargetRegisterInfo *TRI,
        << CmpInst::getPredicateName(Pred) << ')';
     break;
   }
+  case MachineOperand::MO_Placeholder:
+    OS << "<placeholder>";
+    break;
   }
 }
 

@@ -277,6 +277,9 @@ class Verifier : public InstVisitor<Verifier>, VerifierSupport {
   /// already.
   bool SawFrameEscape;
 
+  /// Whether the current function has a DISubprogram attached to it.
+  bool HasDebugInfo = false;
+
   /// Stores the count of how many objects were passed to llvm.localescape for a
   /// given function and the largest index passed to llvm.localrecover.
   DenseMap<Function *, std::pair<unsigned, unsigned>> FrameEscapeInfo;
@@ -345,6 +348,7 @@ public:
     visit(const_cast<Function &>(F));
     verifySiblingFuncletUnwinds();
     InstsInThisBlock.clear();
+    DebugFnArgs.clear();
     LandingPadResultTy = nullptr;
     SawFrameEscape = false;
     SiblingFuncletInfo.clear();
@@ -906,6 +910,13 @@ void Verifier::visitDIDerivedType(const DIDerivedType &N) {
   AssertDI(isScope(N.getRawScope()), "invalid scope", &N, N.getRawScope());
   AssertDI(isType(N.getRawBaseType()), "invalid base type", &N,
            N.getRawBaseType());
+
+  if (N.getDWARFAddressSpace()) {
+    AssertDI(N.getTag() == dwarf::DW_TAG_pointer_type ||
+                 N.getTag() == dwarf::DW_TAG_reference_type,
+             "DWARF address space only applies to pointer or reference types",
+             &N);
+  }
 }
 
 static bool hasConflictingReferenceFlags(unsigned Flags) {
@@ -1951,8 +1962,6 @@ void Verifier::verifySiblingFuncletUnwinds() {
 // visitFunction - Verify that a function is ok.
 //
 void Verifier::visitFunction(const Function &F) {
-  DebugFnArgs.clear();
-
   visitGlobalValue(F);
 
   // Check function arguments.
@@ -2123,7 +2132,8 @@ void Verifier::visitFunction(const Function &F) {
          "Function is marked as dllimport, but not external.", &F);
 
   auto *N = F.getSubprogram();
-  if (!N)
+  HasDebugInfo = (N != nullptr);
+  if (!HasDebugInfo)
     return;
 
   // Check that all !dbg attachments lead to back to N (or, at least, another
@@ -2734,9 +2744,9 @@ void Verifier::verifyCallSite(CallSite CS) {
   // do so causes assertion failures when the inliner sets up inline scope info.
   if (I->getFunction()->getSubprogram() && CS.getCalledFunction() &&
       CS.getCalledFunction()->getSubprogram())
-    Assert(I->getDebugLoc(), "inlinable function call in a function with debug "
-                             "info must have a !dbg location",
-           I);
+    AssertDI(I->getDebugLoc(), "inlinable function call in a function with "
+                               "debug info must have a !dbg location",
+             I);
 
   visitInstruction(*I);
 }
@@ -4426,6 +4436,12 @@ void Verifier::verifyFragmentExpression(const DbgInfoIntrinsic &I) {
 }
 
 void Verifier::verifyFnArgs(const DbgInfoIntrinsic &I) {
+  // This function does not take the scope of noninlined function arguments into
+  // account. Don't run it if current function is nodebug, because it may
+  // contain inlined debug intrinsics.
+  if (!HasDebugInfo)
+    return;
+
   DILocalVariable *Var;
   if (auto *DV = dyn_cast<DbgValueInst>(&I)) {
     // For performance reasons only check non-inlined ones.

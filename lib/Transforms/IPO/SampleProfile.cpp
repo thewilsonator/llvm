@@ -469,16 +469,14 @@ ErrorOr<uint64_t> SampleProfileLoader::getInstWeight(const Instruction &Inst) {
   // If a call/invoke instruction is inlined in profile, but not inlined here,
   // it means that the inlined callsite has no sample, thus the call
   // instruction should have 0 count.
-  bool IsCall = isa<CallInst>(Inst) || isa<InvokeInst>(Inst);
-  if (IsCall && findCalleeFunctionSamples(Inst))
+  if ((isa<CallInst>(Inst) || isa<InvokeInst>(Inst)) &&
+      findCalleeFunctionSamples(Inst))
     return 0;
 
   const DILocation *DIL = DLoc;
   uint32_t LineOffset = getOffset(DIL);
   uint32_t Discriminator = DIL->getBaseDiscriminator();
-  ErrorOr<uint64_t> R = IsCall
-                            ? FS->findCallSamplesAt(LineOffset, Discriminator)
-                            : FS->findSamplesAt(LineOffset, Discriminator);
+  ErrorOr<uint64_t> R = FS->findSamplesAt(LineOffset, Discriminator);
   if (R) {
     bool FirstMark =
         CoverageTracker.markSamplesUsed(FS, LineOffset, Discriminator, R.get());
@@ -1385,7 +1383,7 @@ bool SampleProfileLoaderLegacyPass::runOnModule(Module &M) {
 bool SampleProfileLoader::runOnFunction(Function &F) {
   F.setEntryCount(0);
   Samples = Reader->getSamplesFor(F);
-  if (!Samples->empty())
+  if (Samples && !Samples->empty())
     return emitAnnotations(F);
   return false;
 }

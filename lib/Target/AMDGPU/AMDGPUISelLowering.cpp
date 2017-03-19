@@ -271,6 +271,7 @@ AMDGPUTargetLowering::AMDGPUTargetLowering(const TargetMachine &TM,
 
   setOperationAction(ISD::FP16_TO_FP, MVT::f64, Expand);
   setOperationAction(ISD::FP_TO_FP16, MVT::f64, Custom);
+  setOperationAction(ISD::FP_TO_FP16, MVT::f32, Custom);
 
   const MVT ScalarIntVTs[] = { MVT::i32, MVT::i64 };
   for (MVT VT : ScalarIntVTs) {
@@ -1295,8 +1296,8 @@ SDValue AMDGPUTargetLowering::LowerDIVREM24(SDValue Op, SelectionDAG &DAG,
   SDValue fqneg = DAG.getNode(ISD::FNEG, DL, FltVT, fq);
 
   // float fr = mad(fqneg, fb, fa);
-  unsigned OpCode = Subtarget->hasFP32Denormals() ? 
-                    (unsigned)AMDGPUISD::FMAD_FTZ : 
+  unsigned OpCode = Subtarget->hasFP32Denormals() ?
+                    (unsigned)AMDGPUISD::FMAD_FTZ :
                     (unsigned)ISD::FMAD;
   SDValue fr = DAG.getNode(OpCode, DL, FltVT, fqneg, fb, fa);
 
@@ -2100,15 +2101,19 @@ SDValue AMDGPUTargetLowering::LowerFP64_TO_INT(SDValue Op, SelectionDAG &DAG,
 }
 
 SDValue AMDGPUTargetLowering::LowerFP_TO_FP16(SDValue Op, SelectionDAG &DAG) const {
+  SDLoc DL(Op);
+  SDValue N0 = Op.getOperand(0);
+
+  // Convert to target node to get known bits
+  if (N0.getValueType() == MVT::f32)
+    return DAG.getNode(AMDGPUISD::FP_TO_FP16, DL, Op.getValueType(), N0);
 
   if (getTargetMachine().Options.UnsafeFPMath) {
     // There is a generic expand for FP_TO_FP16 with unsafe fast math.
     return SDValue();
   }
 
-  SDLoc DL(Op);
-  SDValue N0 = Op.getOperand(0);
-  assert (N0.getSimpleValueType() == MVT::f64);
+  assert(N0.getSimpleValueType() == MVT::f64);
 
   // f64 -> f16 conversion using round-to-nearest-even rounding mode.
   const unsigned ExpMask = 0x7ff;
@@ -3351,6 +3356,16 @@ SDValue AMDGPUTargetLowering::PerformDAGCombine(SDNode *N,
     return performStoreCombine(N, DCI);
   case AMDGPUISD::CLAMP:
     return performClampCombine(N, DCI);
+  case AMDGPUISD::RCP: {
+    if (const auto *CFP = dyn_cast<ConstantFPSDNode>(N->getOperand(0))) {
+      // XXX - Should this flush denormals?
+      const APFloat &Val = CFP->getValueAPF();
+      APFloat One(Val.getSemantics(), "1.0");
+      return DAG.getConstantFP(One / Val, SDLoc(N), N->getValueType(0));
+    }
+
+    break;
+  }
   }
   return SDValue();
 }
@@ -3398,6 +3413,9 @@ const char* AMDGPUTargetLowering::getTargetNodeName(unsigned Opcode) const {
   NODE_NAME_CASE(BRANCH_COND);
 
   // AMDGPU DAG nodes
+  NODE_NAME_CASE(IF)
+  NODE_NAME_CASE(ELSE)
+  NODE_NAME_CASE(LOOP)
   NODE_NAME_CASE(ENDPGM)
   NODE_NAME_CASE(RETURN)
   NODE_NAME_CASE(DWORDADDR)
@@ -3468,6 +3486,7 @@ const char* AMDGPUTargetLowering::getTargetNodeName(unsigned Opcode) const {
   NODE_NAME_CASE(CVT_F32_UBYTE2)
   NODE_NAME_CASE(CVT_F32_UBYTE3)
   NODE_NAME_CASE(CVT_PKRTZ_F16_F32)
+  NODE_NAME_CASE(FP_TO_FP16)
   NODE_NAME_CASE(BUILD_VERTICAL_VECTOR)
   NODE_NAME_CASE(CONST_DATA_PTR)
   NODE_NAME_CASE(PC_ADD_REL_OFFSET)
@@ -3565,6 +3584,13 @@ void AMDGPUTargetLowering::computeKnownBitsForTargetNode(
     if (Opc == AMDGPUISD::BFE_U32)
       KnownZero = APInt::getHighBitsSet(BitWidth, BitWidth - Width);
 
+    break;
+  }
+  case AMDGPUISD::FP_TO_FP16: {
+    unsigned BitWidth = KnownZero.getBitWidth();
+
+    // High bits are zero.
+    KnownZero = APInt::getHighBitsSet(BitWidth, BitWidth - 16);
     break;
   }
   }

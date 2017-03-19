@@ -498,7 +498,7 @@ class AccessAnalysis {
 public:
   /// \brief Read or write access location.
   typedef PointerIntPair<Value *, 1, bool> MemAccessInfo;
-  typedef SmallPtrSet<MemAccessInfo, 8> MemAccessInfoSet;
+  typedef SmallVector<MemAccessInfo, 8> MemAccessInfoList;
 
   AccessAnalysis(const DataLayout &Dl, AliasAnalysis *AA, LoopInfo *LI,
                  MemoryDepChecker::DepCandidates &DA,
@@ -550,7 +550,7 @@ public:
     DepChecker.clearDependences();
   }
 
-  MemAccessInfoSet &getDependenciesToCheck() { return CheckDeps; }
+  MemAccessInfoList &getDependenciesToCheck() { return CheckDeps; }
 
 private:
   typedef SetVector<MemAccessInfo> PtrAccessSet;
@@ -564,8 +564,8 @@ private:
 
   const DataLayout &DL;
 
-  /// Set of accesses that need a further dependence check.
-  MemAccessInfoSet CheckDeps;
+  /// List of accesses that need a further dependence check.
+  MemAccessInfoList CheckDeps;
 
   /// Set of pointers that are read only.
   SmallPtrSet<Value*, 16> ReadOnlyPtr;
@@ -822,7 +822,7 @@ void AccessAnalysis::processMemAccesses() {
           // there is no other write to the ptr - this is an optimization to
           // catch "a[i] = a[i] + " without having to do a dependence check).
           if ((IsWrite || IsReadOnlyPtr) && SetHasWrite) {
-            CheckDeps.insert(Access);
+            CheckDeps.push_back(Access);
             IsRTCheckAnalysisNeeded = true;
           }
 
@@ -1036,73 +1036,6 @@ static unsigned getAddressSpaceOperand(Value *I) {
   if (StoreInst *S = dyn_cast<StoreInst>(I))
     return S->getPointerAddressSpace();
   return -1;
-}
-
-bool llvm::sortMemAccesses(ArrayRef<Value *> VL, const DataLayout &DL,
-                           ScalarEvolution &SE,
-                           SmallVectorImpl<Value *> &Sorted,
-                           SmallVectorImpl<unsigned> *Mask) {
-  SmallVector<std::pair<int64_t, Value *>, 4> OffValPairs;
-  OffValPairs.reserve(VL.size());
-  Sorted.reserve(VL.size());
-
-  // Walk over the pointers, and map each of them to an offset relative to
-  // first pointer in the array.
-  Value *Ptr0 = getPointerOperand(VL[0]);
-  const SCEV *Scev0 = SE.getSCEV(Ptr0);
-  Value *Obj0 = GetUnderlyingObject(Ptr0, DL);
-  for (auto *Val : VL) {
-    // The only kind of access we care about here is load.
-    if (!isa<LoadInst>(Val))
-      return false;
-
-    Value *Ptr = getPointerOperand(Val);
-    assert(Ptr && "Expected value to have a pointer operand.");
-
-    // If a pointer refers to a different underlying object, bail - the
-    // pointers are by definition incomparable.
-    Value *CurrObj = GetUnderlyingObject(Ptr, DL);
-    if (CurrObj != Obj0)
-      return false;
-
-    const SCEVConstant *Diff =
-        dyn_cast<SCEVConstant>(SE.getMinusSCEV(SE.getSCEV(Ptr), Scev0));
-
-    // The pointers may not have a constant offset from each other, or SCEV
-    // may just not be smart enough to figure out they do. Regardless,
-    // there's nothing we can do.
-    if (!Diff)
-      return false;
-
-    OffValPairs.emplace_back(Diff->getAPInt().getSExtValue(), Val);
-  }
-
-  SmallVector<unsigned, 4> UseOrder(VL.size());
-  for (unsigned i = 0; i < VL.size(); i++) {
-    UseOrder[i] = i;
-  }
-
-  // Sort the memory accesses and keep the order of their uses in UseOrder.
-  std::sort(UseOrder.begin(), UseOrder.end(),
-            [&OffValPairs](unsigned Left, unsigned Right) {
-              return OffValPairs[Left].first < OffValPairs[Right].first;
-            });
-
-  for (unsigned i = 0; i < VL.size(); i++)
-    Sorted.emplace_back(OffValPairs[UseOrder[i]].second);
-
-  // Sort UseOrder to compute the Mask.
-  if (Mask) {
-    Mask->reserve(VL.size());
-    for (unsigned i = 0; i < VL.size(); i++)
-      Mask->emplace_back(i);
-    std::sort(Mask->begin(), Mask->end(),
-              [&UseOrder](unsigned Left, unsigned Right) {
-                return UseOrder[Left] < UseOrder[Right];
-              });
-  }
-
-  return true;
 }
 
 /// Returns true if the memory operations \p A and \p B are consecutive.
@@ -1546,12 +1479,14 @@ MemoryDepChecker::isDependent(const MemAccessInfo &A, unsigned AIdx,
 }
 
 bool MemoryDepChecker::areDepsSafe(DepCandidates &AccessSets,
-                                   MemAccessInfoSet &CheckDeps,
+                                   MemAccessInfoList &CheckDeps,
                                    const ValueToValueMap &Strides) {
 
   MaxSafeDepDistBytes = -1;
-  while (!CheckDeps.empty()) {
-    MemAccessInfo CurAccess = *CheckDeps.begin();
+  SmallPtrSet<MemAccessInfo, 8> Visited;
+  for (MemAccessInfo CurAccess : CheckDeps) {
+    if (Visited.count(CurAccess))
+      continue;
 
     // Get the relevant memory access set.
     EquivalenceClasses<MemAccessInfo>::iterator I =
@@ -1565,7 +1500,7 @@ bool MemoryDepChecker::areDepsSafe(DepCandidates &AccessSets,
 
     // Check every access pair.
     while (AI != AE) {
-      CheckDeps.erase(*AI);
+      Visited.insert(*AI);
       EquivalenceClasses<MemAccessInfo>::member_iterator OI = std::next(AI);
       while (OI != AE) {
         // Check every accessing instruction pair in program order.

@@ -2647,10 +2647,9 @@ SDValue PPCTargetLowering::LowerINIT_TRAMPOLINE(SDValue Op,
 
   // Lower to a call to __trampoline_setup(Trmp, TrampSize, FPtr, ctx_reg)
   TargetLowering::CallLoweringInfo CLI(DAG);
-  CLI.setDebugLoc(dl).setChain(Chain)
-    .setCallee(CallingConv::C, Type::getVoidTy(*DAG.getContext()),
-               DAG.getExternalSymbol("__trampoline_setup", PtrVT),
-               std::move(Args));
+  CLI.setDebugLoc(dl).setChain(Chain).setLibCallee(
+      CallingConv::C, Type::getVoidTy(*DAG.getContext()),
+      DAG.getExternalSymbol("__trampoline_setup", PtrVT), std::move(Args));
 
   std::pair<SDValue, SDValue> CallResult = LowerCallTo(CLI);
   return CallResult.second;
@@ -4111,7 +4110,7 @@ needStackSlotPassParameters(const PPCSubtarget &Subtarget,
 
 static bool
 hasSameArgumentList(const Function *CallerFn, ImmutableCallSite *CS) {
-  if (CS->arg_size() != CallerFn->getArgumentList().size())
+  if (CS->arg_size() != CallerFn->arg_size())
     return false;
 
   ImmutableCallSite::arg_iterator CalleeArgIter = CS->arg_begin();
@@ -5154,7 +5153,7 @@ SDValue PPCTargetLowering::LowerCall_64SVR4(
   // On ELFv2, we can avoid allocating the parameter area if all the arguments 
   // can be passed to the callee in registers.
   // For the fast calling convention, there is another check below.
-  // Note: keep consistent with LowerFormalArguments_64SVR4()
+  // Note: We should keep consistent with LowerFormalArguments_64SVR4()
   bool HasParameterArea = !isELFv2ABI || isVarArg || CallConv == CallingConv::Fast;
   if (!HasParameterArea) {
     unsigned ParamAreaSize = NumGPRs * PtrByteSize;
@@ -11395,9 +11394,12 @@ SDValue PPCTargetLowering::PerformDAGCombine(SDNode *N,
       // it need to be shifted to the right side before STBRX.
       EVT mVT = cast<StoreSDNode>(N)->getMemoryVT();
       if (Op1VT.bitsGT(mVT)) {
-        int shift = Op1VT.getSizeInBits() - mVT.getSizeInBits();
+        int Shift = Op1VT.getSizeInBits() - mVT.getSizeInBits();
         BSwapOp = DAG.getNode(ISD::SRL, dl, Op1VT, BSwapOp,
-                              DAG.getConstant(shift, dl, MVT::i32));
+                              DAG.getConstant(Shift, dl, MVT::i32));
+        // Need to truncate if this is a bswap of i64 stored as i32/i16.
+        if (Op1VT == MVT::i64)
+          BSwapOp = DAG.getNode(ISD::TRUNCATE, dl, MVT::i32, BSwapOp);
       }
 
       SDValue Ops[] = {

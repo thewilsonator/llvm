@@ -180,6 +180,7 @@ const RegisterBank &ARMRegisterBankInfo::getRegBankFromRegClass(
   switch (RC.getID()) {
   case GPRRegClassID:
   case GPRnopcRegClassID:
+  case GPRspRegClassID:
   case tGPR_and_tcGPRRegClassID:
   case tGPRRegClassID:
     return getRegBank(ARM::GPRRegBankID);
@@ -263,12 +264,10 @@ ARMRegisterBankInfo::getInstrMapping(const MachineInstr &MI) const {
     // We only support G_EXTRACT for splitting a double precision floating point
     // value into two GPRs.
     LLT Ty1 = MRI.getType(MI.getOperand(1).getReg());
-    LLT Ty2 = MRI.getType(MI.getOperand(2).getReg());
-    if (Ty.getSizeInBits() != 32 || Ty1.getSizeInBits() != 32 ||
-        Ty2.getSizeInBits() != 64)
+    if (Ty.getSizeInBits() != 32 || Ty1.getSizeInBits() != 64 ||
+        MI.getOperand(2).getImm() % 32 != 0)
       return InstructionMapping{};
     OperandsMapping = getOperandsMapping({&ARM::ValueMappings[ARM::GPR3OpsIdx],
-                                          &ARM::ValueMappings[ARM::GPR3OpsIdx],
                                           &ARM::ValueMappings[ARM::DPR3OpsIdx],
                                           nullptr, nullptr});
     break;

@@ -138,6 +138,7 @@ def MipsSync : SDNode<"MipsISD::Sync", SDT_Sync, [SDNPHasChain,SDNPSideEffect]>;
 
 def MipsExt :  SDNode<"MipsISD::Ext", SDT_Ext>;
 def MipsIns :  SDNode<"MipsISD::Ins", SDT_Ins>;
+def MipsCIns : SDNode<"MipsISD::CIns", SDT_Ext>;
 
 def MipsLWL : SDNode<"MipsISD::LWL", SDTMipsLoadLR,
                      [SDNPHasChain, SDNPMayLoad, SDNPMemOperand]>;
@@ -1172,6 +1173,10 @@ def immZExt5Plus33 : PatLeaf<(imm), [{
   return isUInt<5>(N->getZExtValue() - 33);
 }]>;
 
+def immZExt5To31 : SDNodeXForm<imm, [{
+  return getImm(N, 31 - N->getZExtValue());
+}]>;
+
 // True if (N + 1) fits in 16-bit field.
 def immSExt16Plus1 : PatLeaf<(imm), [{
   return isInt<17>(N->getSExtValue()) && isInt<16>(N->getSExtValue() + 1);
@@ -1666,10 +1671,6 @@ class AtomicCmpSwap<PatFrag Op, RegisterClass DRC> :
   PseudoSE<(outs DRC:$dst), (ins PtrRC:$ptr, DRC:$cmp, DRC:$swap),
            [(set DRC:$dst, (Op iPTR:$ptr, DRC:$cmp, DRC:$swap))]>;
 
-class AtomicCmpSwapSubword<RegisterClass RC> :
-  PseudoSE<(outs RC:$dst), (ins PtrRC:$ptr, RC:$mask, RC:$ShiftCmpVal,
-                                RC:$mask2, RC:$ShiftNewVal, RC:$ShiftAmt), []>;
-
 class LLBase<string opstr, RegisterOperand RO, DAGOperand MO = mem> :
   InstSE<(outs RO:$rt), (ins MO:$addr), !strconcat(opstr, "\t$rt, $addr"),
          [], II_LL, FrmI, opstr> {
@@ -1748,21 +1749,11 @@ let usesCustomInserter = 1 in {
   def ATOMIC_SWAP_I16      : Atomic2Ops<atomic_swap_16, GPR32>;
   def ATOMIC_SWAP_I32      : Atomic2Ops<atomic_swap_32, GPR32>;
 
-  def ATOMIC_CMP_SWAP_I8_PSEUDO : AtomicCmpSwap<atomic_cmp_swap_8, GPR32>;
-  def ATOMIC_CMP_SWAP_I16_PSEUDO : AtomicCmpSwap<atomic_cmp_swap_16, GPR32>;
-}
-
-let isPseudo = 1 in {
-  // The expansion of ATOMIC_CMP_SWAP_I(8|16) occurs in two parts. First,
-  // the *_PSEUDO is partially lowering during ISelLowering to compute the
-  // aligned addresses and necessary masks, along with another pseudo which
-  // represents the ll/sc loop. That pseudo is lowered after the basic
-  // postRA pseudos have been lowered.
-  def ATOMIC_CMP_SWAP_I8_FRAG : AtomicCmpSwapSubword<GPR32>;
-  def ATOMIC_CMP_SWAP_I16_FRAG : AtomicCmpSwapSubword<GPR32>;
-
+  def ATOMIC_CMP_SWAP_I8   : AtomicCmpSwap<atomic_cmp_swap_8, GPR32>;
+  def ATOMIC_CMP_SWAP_I16  : AtomicCmpSwap<atomic_cmp_swap_16, GPR32>;
   def ATOMIC_CMP_SWAP_I32  : AtomicCmpSwap<atomic_cmp_swap_32, GPR32>;
 }
+
 /// Pseudo instructions for loading and storing accumulator registers.
 let isPseudo = 1, isCodeGenOnly = 1, hasNoSchedulingInfo = 1 in {
   def LOAD_ACC64  : Load<"", ACC64>;
