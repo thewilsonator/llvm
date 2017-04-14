@@ -3063,7 +3063,8 @@ static SDValue promoteToConstantPool(const GlobalValue *GV, SelectionDAG &DAG,
   unsigned RequiredPadding = 4 - (Size % 4);
   bool PaddingPossible =
     RequiredPadding == 4 || (CDAInit && CDAInit->isString());
-  if (!PaddingPossible || Align > 4 || Size > ConstpoolPromotionMaxSize)
+  if (!PaddingPossible || Align > 4 || Size > ConstpoolPromotionMaxSize ||
+      Size == 0)
     return SDValue();
 
   unsigned PaddedSize = Size + ((RequiredPadding == 4) ? 0 : RequiredPadding);
@@ -6988,8 +6989,19 @@ static SDValue SkipExtensionForVMULL(SDNode *N, SelectionDAG &DAG) {
                                         N->getValueType(0),
                                         N->getOpcode());
 
-  if (LoadSDNode *LD = dyn_cast<LoadSDNode>(N))
-    return SkipLoadExtensionForVMULL(LD, DAG);
+  if (LoadSDNode *LD = dyn_cast<LoadSDNode>(N)) {
+    assert((ISD::isSEXTLoad(LD) || ISD::isZEXTLoad(LD)) &&
+           "Expected extending load");
+
+    SDValue newLoad = SkipLoadExtensionForVMULL(LD, DAG);
+    DAG.ReplaceAllUsesOfValueWith(SDValue(LD, 1), newLoad.getValue(1));
+    unsigned Opcode = ISD::isSEXTLoad(LD) ? ISD::SIGN_EXTEND : ISD::ZERO_EXTEND;
+    SDValue extLoad =
+        DAG.getNode(Opcode, SDLoc(newLoad), LD->getValueType(0), newLoad);
+    DAG.ReplaceAllUsesOfValueWith(SDValue(LD, 0), extLoad);
+
+    return newLoad;
+  }
 
   // Otherwise, the value must be a BUILD_VECTOR.  For v2i64, it will
   // have been legalized as a BITCAST from v4i32.
@@ -9516,19 +9528,19 @@ static SDValue AddCombineTo64BitSMLAL16(SDNode *AddcNode, SDNode *AddeNode,
   // be sign extended somehow or SRA'd into 32-bit values
   // (addc (adde (mul 16bit, 16bit), lo), hi)
   SDValue Mul = AddcNode->getOperand(0);
-  SDValue Hi = AddcNode->getOperand(1);
+  SDValue Lo = AddcNode->getOperand(1);
   if (Mul.getOpcode() != ISD::MUL) {
-    Hi = AddcNode->getOperand(0);
+    Lo = AddcNode->getOperand(0);
     Mul = AddcNode->getOperand(1);
     if (Mul.getOpcode() != ISD::MUL)
       return SDValue();
   }
 
   SDValue SRA = AddeNode->getOperand(0);
-  SDValue Lo = AddeNode->getOperand(1);
+  SDValue Hi = AddeNode->getOperand(1);
   if (SRA.getOpcode() != ISD::SRA) {
     SRA = AddeNode->getOperand(1);
-    Lo = AddeNode->getOperand(0);
+    Hi = AddeNode->getOperand(0);
     if (SRA.getOpcode() != ISD::SRA)
       return SDValue();
   }
@@ -9788,8 +9800,8 @@ static SDValue PerformAddcSubcCombine(SDNode *N, SelectionDAG &DAG,
   if (Subtarget->isThumb1Only()) {
     SDValue RHS = N->getOperand(1);
     if (ConstantSDNode *C = dyn_cast<ConstantSDNode>(RHS)) {
-      int64_t imm = C->getSExtValue();
-      if (imm < 0) {
+      int32_t imm = C->getSExtValue();
+      if (imm < 0 && imm > INT_MIN) {
         SDLoc DL(N);
         RHS = DAG.getConstant(-imm, DL, MVT::i32);
         unsigned Opcode = (N->getOpcode() == ARMISD::ADDC) ? ARMISD::SUBC
@@ -11694,8 +11706,8 @@ static void computeKnownBits(SelectionDAG &DAG, SDValue Op, APInt &KnownZero,
   if (Op.getOpcode() == ARMISD::CMOV) {
     APInt KZ2(KnownZero.getBitWidth(), 0);
     APInt KO2(KnownOne.getBitWidth(), 0);
-    computeKnownBits(DAG, Op.getOperand(1), KnownZero, KnownOne);
-    computeKnownBits(DAG, Op.getOperand(2), KZ2, KO2);
+    computeKnownBits(DAG, Op.getOperand(0), KnownZero, KnownOne);
+    computeKnownBits(DAG, Op.getOperand(1), KZ2, KO2);
 
     KnownZero &= KZ2;
     KnownOne &= KO2;
@@ -12604,6 +12616,7 @@ bool ARMTargetLowering::getPostIndexedAddressParts(SDNode *N, SDNode *Op,
 void ARMTargetLowering::computeKnownBitsForTargetNode(const SDValue Op,
                                                       APInt &KnownZero,
                                                       APInt &KnownOne,
+                                                      const APInt &DemandedElts,
                                                       const SelectionDAG &DAG,
                                                       unsigned Depth) const {
   unsigned BitWidth = KnownOne.getBitWidth();
@@ -13580,9 +13593,35 @@ Value *ARMTargetLowering::emitStoreConditional(IRBuilder<> &Builder, Value *Val,
 
 /// A helper function for determining the number of interleaved accesses we
 /// will generate when lowering accesses of the given type.
-static unsigned getNumInterleavedAccesses(VectorType *VecTy,
-                                          const DataLayout &DL) {
+unsigned
+ARMTargetLowering::getNumInterleavedAccesses(VectorType *VecTy,
+                                             const DataLayout &DL) const {
   return (DL.getTypeSizeInBits(VecTy) + 127) / 128;
+}
+
+bool ARMTargetLowering::isLegalInterleavedAccessType(
+    VectorType *VecTy, const DataLayout &DL) const {
+
+  unsigned VecSize = DL.getTypeSizeInBits(VecTy);
+  unsigned ElSize = DL.getTypeSizeInBits(VecTy->getElementType());
+
+  // Ensure the vector doesn't have f16 elements. Even though we could do an
+  // i16 vldN, we can't hold the f16 vectors and will end up converting via
+  // f32.
+  if (VecTy->getElementType()->isHalfTy())
+    return false;
+
+  // Ensure the number of vector elements is greater than 1.
+  if (VecTy->getNumElements() < 2)
+    return false;
+
+  // Ensure the element type is legal.
+  if (ElSize != 8 && ElSize != 16 && ElSize != 32)
+    return false;
+
+  // Ensure the total vector size is 64 or a multiple of 128. Types larger than
+  // 128 will be split into multiple interleaved accesses.
+  return VecSize == 64 || VecSize % 128 == 0;
 }
 
 /// \brief Lower an interleaved load into a vldN intrinsic.
@@ -13609,20 +13648,11 @@ bool ARMTargetLowering::lowerInterleavedLoad(
   Type *EltTy = VecTy->getVectorElementType();
 
   const DataLayout &DL = LI->getModule()->getDataLayout();
-  unsigned VecSize = DL.getTypeSizeInBits(VecTy);
-  bool EltIs64Bits = DL.getTypeSizeInBits(EltTy) == 64;
 
-  // Skip if we do not have NEON and skip illegal vector types and vector types
-  // with i64/f64 elements (vldN doesn't support i64/f64 elements). We can
+  // Skip if we do not have NEON and skip illegal vector types. We can
   // "legalize" wide vector types into multiple interleaved accesses as long as
   // the vector types are divisible by 128.
-  if (!Subtarget->hasNEON() || (VecSize != 64 && VecSize % 128 != 0) ||
-      EltIs64Bits)
-    return false;
-
-  // Skip if the vector has f16 elements: even though we could do an i16 vldN,
-  // we can't hold the f16 vectors and will end up converting via f32.
-  if (EltTy->isHalfTy())
+  if (!Subtarget->hasNEON() || !isLegalInterleavedAccessType(VecTy, DL))
     return false;
 
   unsigned NumLoads = getNumInterleavedAccesses(VecTy, DL);
@@ -13752,20 +13782,11 @@ bool ARMTargetLowering::lowerInterleavedStore(StoreInst *SI,
   VectorType *SubVecTy = VectorType::get(EltTy, LaneLen);
 
   const DataLayout &DL = SI->getModule()->getDataLayout();
-  unsigned SubVecSize = DL.getTypeSizeInBits(SubVecTy);
-  bool EltIs64Bits = DL.getTypeSizeInBits(EltTy) == 64;
 
-  // Skip if we do not have NEON and skip illegal vector types and vector types
-  // with i64/f64 elements (vldN doesn't support i64/f64 elements). We can
+  // Skip if we do not have NEON and skip illegal vector types. We can
   // "legalize" wide vector types into multiple interleaved accesses as long as
   // the vector types are divisible by 128.
-  if (!Subtarget->hasNEON() || (SubVecSize != 64 && SubVecSize % 128 != 0) ||
-      EltIs64Bits)
-    return false;
-
-  // Skip if the vector has f16 elements: even though we could do an i16 vldN,
-  // we can't hold the f16 vectors and will end up converting via f32.
-  if (EltTy->isHalfTy())
+  if (!Subtarget->hasNEON() || !isLegalInterleavedAccessType(SubVecTy, DL))
     return false;
 
   unsigned NumStores = getNumInterleavedAccesses(SubVecTy, DL);

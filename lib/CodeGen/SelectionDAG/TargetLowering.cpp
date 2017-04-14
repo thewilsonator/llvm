@@ -55,14 +55,15 @@ bool TargetLowering::isInTailCallPosition(SelectionDAG &DAG, SDNode *Node,
 
   // Conservatively require the attributes of the call to match those of
   // the return. Ignore noalias because it doesn't affect the call sequence.
-  AttributeSet CallerAttrs = F->getAttributes();
-  if (AttrBuilder(CallerAttrs, AttributeSet::ReturnIndex)
-      .removeAttribute(Attribute::NoAlias).hasAttributes())
+  AttributeList CallerAttrs = F->getAttributes();
+  if (AttrBuilder(CallerAttrs, AttributeList::ReturnIndex)
+          .removeAttribute(Attribute::NoAlias)
+          .hasAttributes())
     return false;
 
   // It's not safe to eliminate the sign / zero extension of the return value.
-  if (CallerAttrs.hasAttribute(AttributeSet::ReturnIndex, Attribute::ZExt) ||
-      CallerAttrs.hasAttribute(AttributeSet::ReturnIndex, Attribute::SExt))
+  if (CallerAttrs.hasAttribute(AttributeList::ReturnIndex, Attribute::ZExt) ||
+      CallerAttrs.hasAttribute(AttributeList::ReturnIndex, Attribute::SExt))
     return false;
 
   // Check if the only use is a function return node.
@@ -730,8 +731,8 @@ bool TargetLowering::SimplifyDemandedBits(SDValue Op,
       }
     }
 
-    KnownZero = KnownZeroOut;
-    KnownOne  = KnownOneOut;
+    KnownZero = std::move(KnownZeroOut);
+    KnownOne  = std::move(KnownOneOut);
     break;
   case ISD::SELECT:
     if (SimplifyDemandedBits(Op.getOperand(2), NewMask, KnownZero,
@@ -790,6 +791,10 @@ bool TargetLowering::SimplifyDemandedBits(SDValue Op,
       // TODO: Should we check for other forms of sign-bit comparisons?
       // Examples: X <= -1, X >= 0
     }
+    if (getBooleanContents(Op0.getValueType()) ==
+            TargetLowering::ZeroOrOneBooleanContent &&
+        BitWidth > 1)
+      KnownZero.setBitsFrom(1);
     break;
   }
   case ISD::SHL:
@@ -1232,7 +1237,7 @@ bool TargetLowering::SimplifyDemandedBits(SDValue Op,
       return true;
     assert((KnownZero & KnownOne) == 0 && "Bits known to be one AND zero?");
 
-    KnownZero |= ~InMask & NewMask;
+    KnownZero |= ~InMask;
     break;
   }
   case ISD::BITCAST:
@@ -1322,6 +1327,7 @@ bool TargetLowering::SimplifyDemandedBits(SDValue Op,
 void TargetLowering::computeKnownBitsForTargetNode(const SDValue Op,
                                                    APInt &KnownZero,
                                                    APInt &KnownOne,
+                                                   const APInt &DemandedElts,
                                                    const SelectionDAG &DAG,
                                                    unsigned Depth) const {
   assert((Op.getOpcode() >= ISD::BUILTIN_OP_END ||
@@ -1336,6 +1342,7 @@ void TargetLowering::computeKnownBitsForTargetNode(const SDValue Op,
 /// This method can be implemented by targets that want to expose additional
 /// information about sign bits to the DAG Combiner.
 unsigned TargetLowering::ComputeNumSignBitsForTargetNode(SDValue Op,
+                                                         const APInt &,
                                                          const SelectionDAG &,
                                                          unsigned Depth) const {
   assert((Op.getOpcode() >= ISD::BUILTIN_OP_END ||
@@ -2981,7 +2988,7 @@ static SDValue BuildExactSDIV(const TargetLowering &TLI, SDValue Op1, APInt d,
 SDValue TargetLowering::BuildSDIVPow2(SDNode *N, const APInt &Divisor,
                                       SelectionDAG &DAG,
                                       std::vector<SDNode *> *Created) const {
-  AttributeSet Attr = DAG.getMachineFunction().getFunction()->getAttributes();
+  AttributeList Attr = DAG.getMachineFunction().getFunction()->getAttributes();
   const TargetLowering &TLI = DAG.getTargetLoweringInfo();
   if (TLI.isIntDivCheap(N->getValueType(0), Attr))
     return SDValue(N,0); // Lower SDIV as SDIV

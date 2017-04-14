@@ -71,6 +71,14 @@ define void @odd_type(i42* %addr) {
   ret void
 }
 
+; FALLBACK-WITH-REPORT-ERR: remark: <unknown>:0:0: unable to legalize instruction: %vreg1<def>(<7 x s32>) = G_LOAD %vreg0; mem:LD28[%addr](align=32) (in function: odd_vector)
+; FALLBACK-WITH-REPORT-ERR: warning: Instruction selection used fallback path for odd_vector
+; FALLBACK-WITH-REPORT-OUT-LABEL: odd_vector:
+define void @odd_vector(<7 x i32>* %addr) {
+  %vec = load <7 x i32>, <7 x i32>* %addr
+  ret void
+}
+
   ; RegBankSelect crashed when given invalid mappings, and AArch64's
   ; implementation produce valid-but-nonsense mappings for G_SEQUENCE.
 ; FALLBACK-WITH-REPORT-ERR: remark: <unknown>:0:0: unable to map instruction
@@ -137,4 +145,12 @@ broken:
 
 continue:
   ret void
+}
+
+; Check that we fallback on invoke translation failures.
+; FALLBACK-WITH-REPORT-ERR: remark: <unknown>:0:0: unable to legalize instruction: %vreg0<def>(s128) = G_FCONSTANT quad 2
+; FALLBACK-WITH-REPORT-ERR: warning: Instruction selection used fallback path for test_quad_dump
+; FALLBACK-WITH-REPORT-OUT-LABEL: test_quad_dump:
+define fp128 @test_quad_dump() {
+  ret fp128 0xL00000000000000004000000000000000
 }

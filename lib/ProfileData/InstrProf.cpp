@@ -136,7 +136,91 @@ const std::error_category &llvm::instrprof_category() {
   return *ErrorCategory;
 }
 
+namespace {
+
+enum InstrProfSectKind {
+#define INSTR_PROF_SECT_ENTRY(Kind, SectName, SectNameCommon, SectNameCoff,    \
+                              Prefix)                                          \
+  Kind,
+#include "llvm/ProfileData/InstrProfData.inc"
+};
+
+const char *InstrProfSectName[] = {
+#define INSTR_PROF_SECT_ENTRY(Kind, SectName, SectNameCommon, SectNameCoff,    \
+                              Prefix)                                          \
+  SectName,
+#include "llvm/ProfileData/InstrProfData.inc"
+};
+
+const char *InstrProfSectNameCommon[] = {
+#define INSTR_PROF_SECT_ENTRY(Kind, SectName, SectNameCommon, SectNameCoff,    \
+                              Prefix)                                          \
+  SectNameCommon,
+#include "llvm/ProfileData/InstrProfData.inc"
+};
+
+const char *InstrProfSectNameCoff[] = {
+#define INSTR_PROF_SECT_ENTRY(Kind, SectName, SectNameCommon, SectNameCoff,    \
+                              Prefix)                                          \
+  SectNameCoff,
+#include "llvm/ProfileData/InstrProfData.inc"
+};
+
+const char *InstrProfSectNamePrefix[] = {
+#define INSTR_PROF_SECT_ENTRY(Kind, SectName, SectNameCommon, SectNameCoff,    \
+                              Prefix)                                          \
+  Prefix,
+#include "llvm/ProfileData/InstrProfData.inc"
+};
+
+std::string getInstrProfSectionName(const Module *M, InstrProfSectKind Kind) {
+
+  if (!M)
+    return InstrProfSectName[Kind];
+
+  bool AddSegment = Triple(M->getTargetTriple()).isOSBinFormatMachO();
+  std::string SectName;
+  if (Triple(M->getTargetTriple()).isOSBinFormatCOFF())
+    SectName = InstrProfSectNameCoff[Kind];
+  else
+    SectName = InstrProfSectNameCommon[Kind];
+
+  if (AddSegment) {
+    SectName = InstrProfSectNamePrefix[Kind] + SectName;
+    if (Kind == IPSK_data) {
+      SectName += ",regular,live_support";
+    }
+  }
+  return SectName;
+}
+
+} // namespace
+
 namespace llvm {
+
+std::string getInstrProfCountersSectionName(const Module *M) {
+  return getInstrProfSectionName(M, IPSK_cnts);
+}
+
+std::string getInstrProfNameSectionName(const Module *M) {
+  return getInstrProfSectionName(M, IPSK_name);
+}
+
+std::string getInstrProfDataSectionName(const Module *M) {
+  return getInstrProfSectionName(M, IPSK_data);
+}
+
+std::string getInstrProfValuesSectionName(const Module *M) {
+  return getInstrProfSectionName(M, IPSK_vals);
+}
+
+std::string getInstrProfVNodesSectionName(const Module *M) {
+  return getInstrProfSectionName(M, IPSK_vnodes);
+}
+
+std::string getInstrProfCoverageSectionName(const Module *M) {
+  return getInstrProfSectionName(M, IPSK_covmap);
+}
 
 void SoftInstrProfErrors::addError(instrprof_error IE) {
   if (IE == instrprof_error::success)
@@ -934,6 +1018,27 @@ bool canRenameComdatFunc(const Function &F, bool CheckAddressTaken) {
     return true;
   }
   return true;
+}
+
+// Parse the value profile options.
+void getMemOPSizeRangeFromOption(std::string MemOPSizeRange,
+                                 int64_t &RangeStart, int64_t &RangeLast) {
+  static const int64_t DefaultMemOPSizeRangeStart = 0;
+  static const int64_t DefaultMemOPSizeRangeLast = 8;
+  RangeStart = DefaultMemOPSizeRangeStart;
+  RangeLast = DefaultMemOPSizeRangeLast;
+
+  if (!MemOPSizeRange.empty()) {
+    auto Pos = MemOPSizeRange.find(":");
+    if (Pos != std::string::npos) {
+      if (Pos > 0)
+        RangeStart = atoi(MemOPSizeRange.substr(0, Pos).c_str());
+      if (Pos < MemOPSizeRange.size() - 1)
+        RangeLast = atoi(MemOPSizeRange.substr(Pos + 1).c_str());
+    } else
+      RangeLast = atoi(MemOPSizeRange.c_str());
+  }
+  assert(RangeLast >= RangeStart);
 }
 
 } // end namespace llvm

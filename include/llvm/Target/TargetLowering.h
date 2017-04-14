@@ -284,9 +284,7 @@ public:
   /// several shifts, adds, and multiplies for this target.
   /// The definition of "cheaper" may depend on whether we're optimizing
   /// for speed or for size.
-  virtual bool isIntDivCheap(EVT VT, AttributeSet Attr) const {
-    return false;
-  }
+  virtual bool isIntDivCheap(EVT VT, AttributeList Attr) const { return false; }
 
   /// Return true if the target can handle a standalone remainder operation.
   virtual bool hasStandaloneRem(EVT VT) const {
@@ -437,6 +435,24 @@ public:
   /// \endcode
   virtual bool isMaskAndCmp0FoldingBeneficial(const Instruction &AndI) const {
     return false;
+  }
+
+  /// Use bitwise logic to make pairs of compares more efficient. For example:
+  /// and (seteq A, B), (seteq C, D) --> seteq (or (xor A, B), (xor C, D)), 0
+  /// This should be true when it takes more than one instruction to lower
+  /// setcc (cmp+set on x86 scalar), when bitwise ops are faster than logic on
+  /// condition bits (crand on PowerPC), and/or when reducing cmp+br is a win.
+  virtual bool convertSetCCLogicToBitwiseLogic(EVT VT) const {
+    return false;
+  }
+
+  /// Return the preferred operand type if the target has a quick way to compare
+  /// integer values of the given size. Assume that any legal integer type can
+  /// be compared efficiently. Targets may override this to allow illegal wide
+  /// types to return a vector type if there is support to compare that type.
+  virtual MVT hasFastEqualityCompare(unsigned NumBits) const {
+    MVT VT = MVT::getIntegerVT(NumBits);
+    return isTypeLegal(VT) ? VT : MVT::INVALID_SIMPLE_VALUE_TYPE;
   }
 
   /// Return true if the target should transform:
@@ -2414,16 +2430,22 @@ public:
                             DAGCombinerInfo &DCI) const;
 
   /// Determine which of the bits specified in Mask are known to be either zero
-  /// or one and return them in the KnownZero/KnownOne bitsets.
+  /// or one and return them in the KnownZero/KnownOne bitsets. The DemandedElts
+  /// argument allows us to only collect the known bits that are shared by the
+  /// requested vector elements.
   virtual void computeKnownBitsForTargetNode(const SDValue Op,
                                              APInt &KnownZero,
                                              APInt &KnownOne,
+                                             const APInt &DemandedElts,
                                              const SelectionDAG &DAG,
                                              unsigned Depth = 0) const;
 
   /// This method can be implemented by targets that want to expose additional
-  /// information about sign bits to the DAG Combiner.
+  /// information about sign bits to the DAG Combiner. The DemandedElts
+  /// argument allows us to only collect the minimum sign bits that are shared
+  /// by the requested vector elements.
   virtual unsigned ComputeNumSignBitsForTargetNode(SDValue Op,
+                                                   const APInt &DemandedElts,
                                                    const SelectionDAG &DAG,
                                                    unsigned Depth = 0) const;
 
@@ -3217,7 +3239,7 @@ private:
 /// Given an LLVM IR type and return type attributes, compute the return value
 /// EVTs and flags, and optionally also the offsets, if the return value is
 /// being lowered to memory.
-void GetReturnInfo(Type *ReturnType, AttributeSet attr,
+void GetReturnInfo(Type *ReturnType, AttributeList attr,
                    SmallVectorImpl<ISD::OutputArg> &Outs,
                    const TargetLowering &TLI, const DataLayout &DL);
 

@@ -84,10 +84,6 @@ LimitFPPrecision("limit-float-precision",
                  cl::location(LimitFloatPrecision),
                  cl::init(0));
 
-static cl::opt<bool>
-EnableFMFInDAG("enable-fmf-dag", cl::init(true), cl::Hidden,
-                cl::desc("Enable fast-math-flags for DAG nodes"));
-
 /// Minimum jump table density for normal functions.
 static cl::opt<unsigned>
 JumpTableDensity("jump-table-density", cl::init(10), cl::Hidden,
@@ -1373,16 +1369,16 @@ void SelectionDAGBuilder::visitRet(const ReturnInst &I) {
       const Function *F = I.getParent()->getParent();
 
       ISD::NodeType ExtendKind = ISD::ANY_EXTEND;
-      if (F->getAttributes().hasAttribute(AttributeSet::ReturnIndex,
+      if (F->getAttributes().hasAttribute(AttributeList::ReturnIndex,
                                           Attribute::SExt))
         ExtendKind = ISD::SIGN_EXTEND;
-      else if (F->getAttributes().hasAttribute(AttributeSet::ReturnIndex,
+      else if (F->getAttributes().hasAttribute(AttributeList::ReturnIndex,
                                                Attribute::ZExt))
         ExtendKind = ISD::ZERO_EXTEND;
 
       LLVMContext &Context = F->getContext();
-      bool RetInReg = F->getAttributes().hasAttribute(AttributeSet::ReturnIndex,
-                                                      Attribute::InReg);
+      bool RetInReg = F->getAttributes().hasAttribute(
+          AttributeList::ReturnIndex, Attribute::InReg);
 
       for (unsigned j = 0; j != NumValues; ++j) {
         EVT VT = ValueVTs[j];
@@ -2586,13 +2582,13 @@ void SelectionDAGBuilder::visitBinary(const User &I, unsigned OpCode) {
   Flags.setNoSignedWrap(nsw);
   Flags.setNoUnsignedWrap(nuw);
   Flags.setVectorReduction(vec_redux);
-  if (EnableFMFInDAG) {
-    Flags.setAllowReciprocal(FMF.allowReciprocal());
-    Flags.setNoInfs(FMF.noInfs());
-    Flags.setNoNaNs(FMF.noNaNs());
-    Flags.setNoSignedZeros(FMF.noSignedZeros());
-    Flags.setUnsafeAlgebra(FMF.unsafeAlgebra());
-  }
+  Flags.setAllowReciprocal(FMF.allowReciprocal());
+  Flags.setAllowContract(FMF.allowContract());
+  Flags.setNoInfs(FMF.noInfs());
+  Flags.setNoNaNs(FMF.noNaNs());
+  Flags.setNoSignedZeros(FMF.noSignedZeros());
+  Flags.setUnsafeAlgebra(FMF.unsafeAlgebra());
+
   SDValue BinNodeValue = DAG.getNode(OpCode, getCurSDLoc(), Op1.getValueType(),
                                      Op1, Op2, &Flags);
   setValue(&I, BinNodeValue);
@@ -5525,7 +5521,7 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
   case Intrinsic::trap: {
     StringRef TrapFuncName =
         I.getAttributes()
-            .getAttribute(AttributeSet::FunctionIndex, "trap-func-name")
+            .getAttribute(AttributeList::FunctionIndex, "trap-func-name")
             .getValueAsString();
     if (TrapFuncName.empty()) {
       ISD::NodeType Op = (Intrinsic == Intrinsic::trap) ?
@@ -5955,13 +5951,17 @@ static bool IsOnlyUsedInZeroEqualityComparison(const Value *V) {
 }
 
 static SDValue getMemCmpLoad(const Value *PtrVal, MVT LoadVT,
-                             Type *LoadTy,
                              SelectionDAGBuilder &Builder) {
 
   // Check to see if this load can be trivially constant folded, e.g. if the
   // input is from a string literal.
   if (const Constant *LoadInput = dyn_cast<Constant>(PtrVal)) {
     // Cast pointer to the type we really want to load.
+    Type *LoadTy =
+        Type::getIntNTy(PtrVal->getContext(), LoadVT.getScalarSizeInBits());
+    if (LoadVT.isVector())
+      LoadTy = VectorType::get(LoadTy, LoadVT.getVectorNumElements());
+
     LoadInput = ConstantExpr::getBitCast(const_cast<Constant *>(LoadInput),
                                          PointerType::getUnqual(LoadTy));
 
@@ -6039,57 +6039,64 @@ bool SelectionDAGBuilder::visitMemCmpCall(const CallInst &I) {
   if (!CSize || !IsOnlyUsedInZeroEqualityComparison(&I))
     return false;
 
-  MVT LoadVT;
-  Type *LoadTy;
-  switch (CSize->getZExtValue()) {
-  default:
-    return false;
-  case 2:
-    LoadVT = MVT::i16;
-    LoadTy = Type::getInt16Ty(CSize->getContext());
-    break;
-  case 4:
-    LoadVT = MVT::i32;
-    LoadTy = Type::getInt32Ty(CSize->getContext());
-    break;
-  case 8:
-    LoadVT = MVT::i64;
-    LoadTy = Type::getInt64Ty(CSize->getContext());
-    break;
-  /*
-  case 16:
-    LoadVT = MVT::v4i32;
-    LoadTy = Type::getInt32Ty(CSize->getContext());
-    LoadTy = VectorType::get(LoadTy, 4);
-    break;
-  */
-  }
+  // If the target has a fast compare for the given size, it will return a
+  // preferred load type for that size. Require that the load VT is legal and
+  // that the target supports unaligned loads of that type. Otherwise, return
+  // INVALID.
+  auto hasFastLoadsAndCompare = [&](unsigned NumBits) {
+    const TargetLowering &TLI = DAG.getTargetLoweringInfo();
+    MVT LVT = TLI.hasFastEqualityCompare(NumBits);
+    if (LVT != MVT::INVALID_SIMPLE_VALUE_TYPE) {
+      // TODO: Handle 5 byte compare as 4-byte + 1 byte.
+      // TODO: Handle 8 byte compare on x86-32 as two 32-bit loads.
+      // TODO: Check alignment of src and dest ptrs.
+      unsigned DstAS = LHS->getType()->getPointerAddressSpace();
+      unsigned SrcAS = RHS->getType()->getPointerAddressSpace();
+      if (!TLI.isTypeLegal(LVT) ||
+          !TLI.allowsMisalignedMemoryAccesses(LVT, SrcAS) ||
+          !TLI.allowsMisalignedMemoryAccesses(LVT, DstAS))
+        LVT = MVT::INVALID_SIMPLE_VALUE_TYPE;
+    }
 
-  // This turns into unaligned loads.  We only do this if the target natively
+    return LVT;
+  };
+
+  // This turns into unaligned loads. We only do this if the target natively
   // supports the MVT we'll be loading or if it is small enough (<= 4) that
   // we'll only produce a small number of byte loads.
-
-  // Require that we can find a legal MVT, and only do this if the target
-  // supports unaligned loads of that type.  Expanding into byte loads would
-  // bloat the code.
-  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
-  if (CSize->getZExtValue() > 4) {
-    unsigned DstAS = LHS->getType()->getPointerAddressSpace();
-    unsigned SrcAS = RHS->getType()->getPointerAddressSpace();
-    // TODO: Handle 5 byte compare as 4-byte + 1 byte.
-    // TODO: Handle 8 byte compare on x86-32 as two 32-bit loads.
-    // TODO: Check alignment of src and dest ptrs.
-    if (!TLI.isTypeLegal(LoadVT) ||
-        !TLI.allowsMisalignedMemoryAccesses(LoadVT, SrcAS) ||
-        !TLI.allowsMisalignedMemoryAccesses(LoadVT, DstAS))
-      return false;
+  MVT LoadVT;
+  unsigned NumBitsToCompare = CSize->getZExtValue() * 8;
+  switch (NumBitsToCompare) {
+  default:
+    return false;
+  case 16:
+    LoadVT = MVT::i16;
+    break;
+  case 32:
+    LoadVT = MVT::i32;
+    break;
+  case 64:
+  case 128:
+  case 256:
+    LoadVT = hasFastLoadsAndCompare(NumBitsToCompare);
+    break;
   }
 
-  SDValue LHSVal = getMemCmpLoad(LHS, LoadVT, LoadTy, *this);
-  SDValue RHSVal = getMemCmpLoad(RHS, LoadVT, LoadTy, *this);
-  SDValue SetCC =
-      DAG.getSetCC(getCurSDLoc(), MVT::i1, LHSVal, RHSVal, ISD::SETNE);
-  processIntegerCallValue(I, SetCC, false);
+  if (LoadVT == MVT::INVALID_SIMPLE_VALUE_TYPE)
+    return false;
+
+  SDValue LoadL = getMemCmpLoad(LHS, LoadVT, *this);
+  SDValue LoadR = getMemCmpLoad(RHS, LoadVT, *this);
+
+  // Bitcast to a wide integer type if the loads are vectors.
+  if (LoadVT.isVector()) {
+    EVT CmpVT = EVT::getIntegerVT(LHS->getContext(), LoadVT.getSizeInBits());
+    LoadL = DAG.getBitcast(CmpVT, LoadL);
+    LoadR = DAG.getBitcast(CmpVT, LoadR);
+  }
+
+  SDValue Cmp = DAG.getSetCC(getCurSDLoc(), MVT::i1, LoadL, LoadR, ISD::SETNE);
+  processIntegerCallValue(I, Cmp, false);
   return true;
 }
 
@@ -7603,9 +7610,9 @@ void SelectionDAGBuilder::visitPatchpoint(ImmutableCallSite CS,
   FuncInfo.MF->getFrameInfo().setHasPatchPoint();
 }
 
-/// Returns an AttributeSet representing the attributes applied to the return
+/// Returns an AttributeList representing the attributes applied to the return
 /// value of the given call.
-static AttributeSet getReturnAttrs(TargetLowering::CallLoweringInfo &CLI) {
+static AttributeList getReturnAttrs(TargetLowering::CallLoweringInfo &CLI) {
   SmallVector<Attribute::AttrKind, 2> Attrs;
   if (CLI.RetSExt)
     Attrs.push_back(Attribute::SExt);
@@ -7614,8 +7621,8 @@ static AttributeSet getReturnAttrs(TargetLowering::CallLoweringInfo &CLI) {
   if (CLI.IsInReg)
     Attrs.push_back(Attribute::InReg);
 
-  return AttributeSet::get(CLI.RetTy->getContext(), AttributeSet::ReturnIndex,
-                           Attrs);
+  return AttributeList::get(CLI.RetTy->getContext(), AttributeList::ReturnIndex,
+                            Attrs);
 }
 
 /// TargetLowering::LowerCallTo - This is the default LowerCallTo

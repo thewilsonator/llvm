@@ -22,6 +22,7 @@
 #include "SIInstrInfo.h"
 #include "SIISelLowering.h"
 #include "SIFrameLowering.h"
+#include "SIMachineFunctionInfo.h"
 #include "Utils/AMDGPUBaseInfo.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/CodeGen/GlobalISel/GISelAccessor.h"
@@ -156,6 +157,7 @@ protected:
 
   InstrItineraryData InstrItins;
   SelectionDAGTargetInfo TSInfo;
+  AMDGPUAS AS;
 
 public:
   AMDGPUSubtarget(const Triple &TT, StringRef GPU, StringRef FS,
@@ -211,6 +213,10 @@ public:
 
   unsigned getMaxPrivateElementSize() const {
     return MaxPrivateElementSize;
+  }
+
+  AMDGPUAS getAMDGPUAS() const {
+    return AS;
   }
 
   bool has16BitInsts() const {
@@ -316,6 +322,11 @@ public:
   /// Inverse of getMaxLocalMemWithWaveCount. Return the maximum wavecount if
   /// the given LDS memory size is the only constraint.
   unsigned getOccupancyWithLocalMemSize(uint32_t Bytes, const Function &) const;
+
+  unsigned getOccupancyWithLocalMemSize(const MachineFunction &MF) const {
+    const auto *MFI = MF.getInfo<SIMachineFunctionInfo>();
+    return getOccupancyWithLocalMemSize(MFI->getLDSSize(), *MF.getFunction());
+  }
 
   bool hasFP16Denormals() const {
     return FP64FP16Denormals;
@@ -501,6 +512,9 @@ public:
   /// compatible with minimum/maximum number of waves limited by flat work group
   /// size, register usage, and/or lds usage.
   std::pair<unsigned, unsigned> getWavesPerEU(const Function &F) const;
+
+  /// Creates value range metadata on an workitemid.* inrinsic call or load.
+  bool makeLIDRangeMetadata(Instruction *I) const;
 };
 
 class R600Subtarget final : public AMDGPUSubtarget {
@@ -617,6 +631,10 @@ public:
 
   bool hasVGPRIndexMode() const {
     return HasVGPRIndexMode;
+  }
+
+  bool useVGPRIndexMode(bool UserEnable) const {
+    return !hasMovrel() || (UserEnable && hasVGPRIndexMode());
   }
 
   bool hasScalarCompareEq64() const {
