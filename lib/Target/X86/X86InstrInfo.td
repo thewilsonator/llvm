@@ -283,6 +283,11 @@ def X86SegAlloca : SDNode<"X86ISD::SEG_ALLOCA", SDT_X86SEG_ALLOCA,
 def X86TLSCall : SDNode<"X86ISD::TLSCALL", SDT_X86TLSCALL,
                         [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue]>;
 
+def X86lwpins : SDNode<"X86ISD::LWPINS",
+                       SDTypeProfile<1, 3, [SDTCisVT<0, i32>, SDTCisInt<1>,
+                                            SDTCisVT<2, i32>, SDTCisVT<3, i32>]>,
+                       [SDNPHasChain, SDNPMayStore, SDNPMayLoad, SDNPSideEffect]>;
+
 //===----------------------------------------------------------------------===//
 // X86 Operand Definitions.
 //
@@ -836,6 +841,7 @@ def HasFMA       : Predicate<"Subtarget->hasFMA()">;
 def HasFMA4      : Predicate<"Subtarget->hasFMA4()">;
 def HasXOP       : Predicate<"Subtarget->hasXOP()">;
 def HasTBM       : Predicate<"Subtarget->hasTBM()">;
+def HasLWP       : Predicate<"Subtarget->hasLWP()">;
 def HasMOVBE     : Predicate<"Subtarget->hasMOVBE()">;
 def HasRDRAND    : Predicate<"Subtarget->hasRDRAND()">;
 def HasF16C      : Predicate<"Subtarget->hasF16C()">;
@@ -877,7 +883,9 @@ def In32BitMode  : Predicate<"Subtarget->is32Bit()">,
 def IsWin64      : Predicate<"Subtarget->isTargetWin64()">;
 def NotWin64     : Predicate<"!Subtarget->isTargetWin64()">;
 def NotWin64WithoutFP : Predicate<"!Subtarget->isTargetWin64() ||"
-                                  "Subtarget->getFrameLowering()->hasFP(*MF)">;
+                                  "Subtarget->getFrameLowering()->hasFP(*MF)"> {
+  let RecomputePerFunction = 1;
+}
 def IsPS4        : Predicate<"Subtarget->isTargetPS4()">;
 def NotPS4       : Predicate<"!Subtarget->isTargetPS4()">;
 def IsNaCl       : Predicate<"Subtarget->isTargetNaCl()">;
@@ -887,9 +895,9 @@ def KernelCode   : Predicate<"TM.getCodeModel() == CodeModel::Kernel">;
 def NearData     : Predicate<"TM.getCodeModel() == CodeModel::Small ||"
                              "TM.getCodeModel() == CodeModel::Kernel">;
 def IsNotPIC     : Predicate<"!TM.isPositionIndependent()">;
-def OptForSize   : Predicate<"OptForSize">;
-def OptForMinSize : Predicate<"OptForMinSize">;
-def OptForSpeed  : Predicate<"!OptForSize">;
+def OptForSize   : Predicate<"Subtarget->getOptForSize()">;
+def OptForMinSize : Predicate<"Subtarget->getOptForMinSize()">;
+def OptForSpeed  : Predicate<"!Subtarget->getOptForSize()">;
 def FastBTMem    : Predicate<"!Subtarget->isBTMemSlow()">;
 def CallImmAddr  : Predicate<"Subtarget->isLegalToCallImmediateAddr()">;
 def FavorMemIndirectCall  : Predicate<"!Subtarget->callRegIndirect()">;
@@ -897,6 +905,7 @@ def NotSlowIncDec : Predicate<"!Subtarget->slowIncDec()">;
 def HasFastMem32 : Predicate<"!Subtarget->isUnalignedMem32Slow()">;
 def HasFastLZCNT : Predicate<"Subtarget->hasFastLZCNT()">;
 def HasFastSHLDRotate : Predicate<"Subtarget->hasFastSHLDRotate()">;
+def HasERMSB : Predicate<"Subtarget->hasERMSB()">;
 def HasMFence    : Predicate<"Subtarget->hasMFence()">;
 
 //===----------------------------------------------------------------------===//
@@ -1986,11 +1995,11 @@ def REX64_PREFIX : I<0x48, RawFrm, (outs),  (ins), "rex64", []>,
                      Requires<[In64BitMode]>;
 
 // Data16 instruction prefix
-def DATA16_PREFIX : I<0x66, RawFrm, (outs),  (ins), "data16", []>, 
+def DATA16_PREFIX : I<0x66, RawFrm, (outs),  (ins), "data16", []>,
                      Requires<[Not16BitMode]>;
 
 // Data instruction prefix
-def DATA32_PREFIX : I<0x66, RawFrm, (outs),  (ins), "data32", []>, 
+def DATA32_PREFIX : I<0x66, RawFrm, (outs),  (ins), "data32", []>,
                      Requires<[In16BitMode]>;
 
 // Repeat string operation instruction prefixes
@@ -2441,6 +2450,59 @@ defm TZMSK   : tbm_binary_intr<0x01, "tzmsk", MRM4r, MRM4m>;
 } // HasTBM, EFLAGS
 
 //===----------------------------------------------------------------------===//
+// Lightweight Profiling Instructions
+
+let Predicates = [HasLWP] in {
+
+def LLWPCB : I<0x12, MRM0r, (outs), (ins GR32:$src), "llwpcb\t$src",
+               [(int_x86_llwpcb GR32:$src)], IIC_LWP>,
+               XOP, XOP9, Requires<[Not64BitMode]>;
+def SLWPCB : I<0x12, MRM1r, (outs GR32:$dst), (ins), "slwpcb\t$dst",
+               [(set GR32:$dst, (int_x86_slwpcb))], IIC_LWP>,
+               XOP, XOP9, Requires<[Not64BitMode]>;
+
+def LLWPCB64 : I<0x12, MRM0r, (outs), (ins GR64:$src), "llwpcb\t$src",
+                 [(int_x86_llwpcb GR64:$src)], IIC_LWP>,
+                 XOP, XOP9, VEX_W, Requires<[In64BitMode]>;
+def SLWPCB64 : I<0x12, MRM1r, (outs GR64:$dst), (ins), "slwpcb\t$dst",
+                 [(set GR64:$dst, (int_x86_slwpcb))], IIC_LWP>,
+                 XOP, XOP9, VEX_W, Requires<[In64BitMode]>;
+
+multiclass lwpins_intr<RegisterClass RC> {
+  def rri : Ii32<0x12, MRM0r, (outs), (ins RC:$src0, GR32:$src1, i32imm:$cntl),
+                 "lwpins\t{$cntl, $src1, $src0|$src0, $src1, $cntl}",
+                 [(set EFLAGS, (X86lwpins RC:$src0, GR32:$src1, imm:$cntl))]>,
+                 XOP_4V, XOPA;
+  let mayLoad = 1 in
+  def rmi : Ii32<0x12, MRM0m, (outs), (ins RC:$src0, i32mem:$src1, i32imm:$cntl),
+                 "lwpins\t{$cntl, $src1, $src0|$src0, $src1, $cntl}",
+                 [(set EFLAGS, (X86lwpins RC:$src0, (loadi32 addr:$src1), imm:$cntl))]>,
+                 XOP_4V, XOPA;
+}
+
+let Defs = [EFLAGS] in {
+  defm LWPINS32 : lwpins_intr<GR32>;
+  defm LWPINS64 : lwpins_intr<GR64>, VEX_W;
+} // EFLAGS
+
+multiclass lwpval_intr<RegisterClass RC, Intrinsic Int> {
+  def rri : Ii32<0x12, MRM1r, (outs), (ins RC:$src0, GR32:$src1, i32imm:$cntl),
+                 "lwpval\t{$cntl, $src1, $src0|$src0, $src1, $cntl}",
+                 [(Int RC:$src0, GR32:$src1, imm:$cntl)], IIC_LWP>,
+                 XOP_4V, XOPA;
+  let mayLoad = 1 in
+  def rmi : Ii32<0x12, MRM1m, (outs), (ins RC:$src0, i32mem:$src1, i32imm:$cntl),
+                 "lwpval\t{$cntl, $src1, $src0|$src0, $src1, $cntl}",
+                 [(Int RC:$src0, (loadi32 addr:$src1), imm:$cntl)], IIC_LWP>,
+                 XOP_4V, XOPA;
+}
+
+defm LWPVAL32 : lwpval_intr<GR32, int_x86_lwpval32>;
+defm LWPVAL64 : lwpval_intr<GR64, int_x86_lwpval64>, VEX_W;
+
+} // HasLWP
+
+//===----------------------------------------------------------------------===//
 // MONITORX/MWAITX Instructions
 //
 let SchedRW = [ WriteSystem ] in {
@@ -2456,7 +2518,7 @@ let SchedRW = [ WriteSystem ] in {
   }
 
   let Uses = [ ECX, EAX, EBX ] in {
-    def MWAITXrrr : I<0x01, MRM_FB, (outs), (ins), "mwaitx", 
+    def MWAITXrrr : I<0x01, MRM_FB, (outs), (ins), "mwaitx",
                     [(int_x86_mwaitx ECX, EAX, EBX)], IIC_SSE_MWAITX>,
                     TB, Requires<[ HasMWAITX ]>;
   }

@@ -44,6 +44,7 @@
 #include "llvm/IR/ValueHandle.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/KnownBits.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/SimplifyLibCalls.h"
@@ -378,7 +379,7 @@ static Value *simplifyX86immShift(const IntrinsicInst &II,
     for (unsigned i = 0; i != NumSubElts; ++i) {
       unsigned SubEltIdx = (NumSubElts - 1) - i;
       auto SubElt = cast<ConstantInt>(CDV->getElementAsConstant(SubEltIdx));
-      Count = Count.shl(BitWidth);
+      Count <<= BitWidth;
       Count |= SubElt->getValue().zextOrTrunc(64);
     }
   }
@@ -839,7 +840,8 @@ static Value *simplifyX86extrq(IntrinsicInst &II, Value *Op0,
     // Length bits.
     if (CI0) {
       APInt Elt = CI0->getValue();
-      Elt = Elt.lshr(Index).zextOrTrunc(Length);
+      Elt.lshrInPlace(Index);
+      Elt = Elt.zextOrTrunc(Length);
       return LowConstantHighUndef(Elt.getZExtValue());
     }
 
@@ -1036,7 +1038,7 @@ static Value *simplifyX86vpermilvar(const IntrinsicInst &II,
     // The PD variants uses bit 1 to select per-lane element index, so
     // shift down to convert to generic shuffle mask index.
     if (IsPD)
-      Index = Index.lshr(1);
+      Index.lshrInPlace(1);
 
     // The _256 variants are a bit trickier since the mask bits always index
     // into the corresponding 128 half. In order to convert to a generic
@@ -1377,30 +1379,29 @@ static Instruction *foldCttzCtlz(IntrinsicInst &II, InstCombiner &IC) {
     return nullptr;
 
   unsigned BitWidth = IT->getBitWidth();
-  APInt KnownZero(BitWidth, 0);
-  APInt KnownOne(BitWidth, 0);
-  IC.computeKnownBits(Op0, KnownZero, KnownOne, 0, &II);
+  KnownBits Known(BitWidth);
+  IC.computeKnownBits(Op0, Known, 0, &II);
 
   // Create a mask for bits above (ctlz) or below (cttz) the first known one.
   bool IsTZ = II.getIntrinsicID() == Intrinsic::cttz;
-  unsigned NumMaskBits = IsTZ ? KnownOne.countTrailingZeros()
-                              : KnownOne.countLeadingZeros();
-  APInt Mask = IsTZ ? APInt::getLowBitsSet(BitWidth, NumMaskBits)
-                    : APInt::getHighBitsSet(BitWidth, NumMaskBits);
+  unsigned PossibleZeros = IsTZ ? Known.One.countTrailingZeros()
+                                : Known.One.countLeadingZeros();
+  unsigned DefiniteZeros = IsTZ ? Known.Zero.countTrailingOnes()
+                                : Known.Zero.countLeadingOnes();
 
   // If all bits above (ctlz) or below (cttz) the first known one are known
   // zero, this value is constant.
   // FIXME: This should be in InstSimplify because we're replacing an
   // instruction with a constant.
-  if ((Mask & KnownZero) == Mask) {
-    auto *C = ConstantInt::get(IT, APInt(BitWidth, NumMaskBits));
+  if (PossibleZeros == DefiniteZeros) {
+    auto *C = ConstantInt::get(IT, DefiniteZeros);
     return IC.replaceInstUsesWith(II, C);
   }
 
   // If the input to cttz/ctlz is known to be non-zero,
   // then change the 'ZeroIsUndef' parameter to 'true'
   // because we know the zero behavior can't affect the result.
-  if (KnownOne != 0 || isKnownNonZero(Op0, IC.getDataLayout())) {
+  if (Known.One != 0 || isKnownNonZero(Op0, IC.getDataLayout())) {
     if (!match(II.getArgOperand(1), m_One())) {
       II.setOperand(1, IC.Builder->getTrue());
       return &II;
@@ -1817,8 +1818,8 @@ Instruction *InstCombiner::visitVACopyInst(VACopyInst &I) {
 /// lifting.
 Instruction *InstCombiner::visitCallInst(CallInst &CI) {
   auto Args = CI.arg_operands();
-  if (Value *V = SimplifyCall(CI.getCalledValue(), Args.begin(), Args.end(), DL,
-                              &TLI, &DT, &AC))
+  if (Value *V =
+          SimplifyCall(CI.getCalledValue(), Args.begin(), Args.end(), SQ))
     return replaceInstUsesWith(CI, V);
 
   if (isFreeCall(&CI, &TLI))
@@ -2335,6 +2336,37 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     }
     if (MadeChange)
       return II;
+    break;
+  }
+  case Intrinsic::x86_avx512_mask_cmp_pd_128:
+  case Intrinsic::x86_avx512_mask_cmp_pd_256:
+  case Intrinsic::x86_avx512_mask_cmp_pd_512:
+  case Intrinsic::x86_avx512_mask_cmp_ps_128:
+  case Intrinsic::x86_avx512_mask_cmp_ps_256:
+  case Intrinsic::x86_avx512_mask_cmp_ps_512: {
+    // Folding cmp(sub(a,b),0) -> cmp(a,b) and cmp(0,sub(a,b)) -> cmp(b,a)
+    Value *Arg0 = II->getArgOperand(0);
+    Value *Arg1 = II->getArgOperand(1);
+    bool Arg0IsZero = match(Arg0, m_Zero());
+    if (Arg0IsZero)
+      std::swap(Arg0, Arg1);
+    Value *A, *B;
+    // This fold requires only the NINF(not +/- inf) since inf minus
+    // inf is nan.
+    // NSZ(No Signed Zeros) is not needed because zeros of any sign are
+    // equal for both compares.
+    // NNAN is not needed because nans compare the same for both compares.
+    // The compare intrinsic uses the above assumptions and therefore
+    // doesn't require additional flags.
+    if ((match(Arg0, m_OneUse(m_FSub(m_Value(A), m_Value(B)))) &&
+         match(Arg1, m_Zero()) &&
+         cast<Instruction>(Arg0)->getFastMathFlags().noInfs())) {
+      if (Arg0IsZero)
+        std::swap(A, B);
+      II->setArgOperand(0, A);
+      II->setArgOperand(1, B);
+      return II;
+    }
     break;
   }
 
@@ -3400,8 +3432,26 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     if (auto *CSrc0 = dyn_cast<Constant>(Src0)) {
       if (auto *CSrc1 = dyn_cast<Constant>(Src1)) {
         Constant *CCmp = ConstantExpr::getCompare(CCVal, CSrc0, CSrc1);
-        return replaceInstUsesWith(*II,
-                                   ConstantExpr::getSExt(CCmp, II->getType()));
+        if (CCmp->isNullValue()) {
+          return replaceInstUsesWith(
+              *II, ConstantExpr::getSExt(CCmp, II->getType()));
+        }
+
+        // The result of V_ICMP/V_FCMP assembly instructions (which this
+        // intrinsic exposes) is one bit per thread, masked with the EXEC
+        // register (which contains the bitmask of live threads). So a
+        // comparison that always returns true is the same as a read of the
+        // EXEC register.
+        Value *NewF = Intrinsic::getDeclaration(
+            II->getModule(), Intrinsic::read_register, II->getType());
+        Metadata *MDArgs[] = {MDString::get(II->getContext(), "exec")};
+        MDNode *MD = MDNode::get(II->getContext(), MDArgs);
+        Value *Args[] = {MetadataAsValue::get(II->getContext(), MD)};
+        CallInst *NewCall = Builder->CreateCall(NewF, Args);
+        NewCall->addAttribute(AttributeList::FunctionIndex,
+                              Attribute::Convergent);
+        NewCall->takeName(II);
+        return replaceInstUsesWith(*II, NewCall);
       }
 
       // Canonicalize constants to RHS.
@@ -3567,9 +3617,9 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
 
     // If there is a dominating assume with the same condition as this one,
     // then this one is redundant, and should be removed.
-    APInt KnownZero(1, 0), KnownOne(1, 0);
-    computeKnownBits(IIOperand, KnownZero, KnownOne, 0, II);
-    if (KnownOne.isAllOnesValue())
+    KnownBits Known(1);
+    computeKnownBits(IIOperand, Known, 0, II);
+    if (Known.isAllOnes())
       return eraseInstFromFunction(*II);
 
     // Update the cache of affected values for this assumption (we might be
@@ -3793,9 +3843,9 @@ Instruction *InstCombiner::visitCallSite(CallSite CS) {
 
   for (Value *V : CS.args()) {
     if (V->getType()->isPointerTy() &&
-        !CS.paramHasAttr(ArgNo + 1, Attribute::NonNull) &&
+        !CS.paramHasAttr(ArgNo, Attribute::NonNull) &&
         isKnownNonNullAt(V, CS.getInstruction(), &DT))
-      Indices.push_back(ArgNo + 1);
+      Indices.push_back(ArgNo + AttributeList::FirstArgIndex);
     ArgNo++;
   }
 
@@ -4036,21 +4086,15 @@ bool InstCombiner::transformConstExprCastCall(CallSite CS) {
   }
 
   if (FT->getNumParams() < NumActualArgs && FT->isVarArg() &&
-      !CallerPAL.isEmpty())
+      !CallerPAL.isEmpty()) {
     // In this case we have more arguments than the new function type, but we
     // won't be dropping them.  Check that these extra arguments have attributes
     // that are compatible with being a vararg call argument.
-    for (unsigned i = CallerPAL.getNumSlots(); i; --i) {
-      unsigned Index = CallerPAL.getSlotIndex(i - 1);
-      if (Index <= FT->getNumParams())
-        break;
-
-      // Check if it has an attribute that's incompatible with varargs.
-      AttributeList PAttrs = CallerPAL.getSlotAttributes(i - 1);
-      if (PAttrs.hasAttribute(Index, Attribute::StructRet))
-        return false;
-    }
-
+    unsigned SRetIdx;
+    if (CallerPAL.hasAttrSomewhere(Attribute::StructRet, &SRetIdx) &&
+        SRetIdx > FT->getNumParams())
+      return false;
+  }
 
   // Okay, we decided that this is a safe thing to do: go ahead and start
   // inserting cast instructions as necessary.

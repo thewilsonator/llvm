@@ -25,6 +25,8 @@ SIMachineFunctionInfo::SIMachineFunctionInfo(const MachineFunction &MF)
     TIDReg(AMDGPU::NoRegister),
     ScratchRSrcReg(AMDGPU::NoRegister),
     ScratchWaveOffsetReg(AMDGPU::NoRegister),
+    FrameOffsetReg(AMDGPU::NoRegister),
+    StackPtrOffsetReg(AMDGPU::NoRegister),
     PrivateSegmentBufferUserSGPR(AMDGPU::NoRegister),
     DispatchPtrUserSGPR(AMDGPU::NoRegister),
     QueuePtrUserSGPR(AMDGPU::NoRegister),
@@ -120,8 +122,14 @@ SIMachineFunctionInfo::SIMachineFunctionInfo(const MachineFunction &MF)
   bool MaySpill = ST.isVGPRSpillingEnabled(*F);
   bool HasStackObjects = FrameInfo.hasStackObjects();
 
-  if (HasStackObjects || MaySpill)
+  if (HasStackObjects || MaySpill) {
     PrivateSegmentWaveByteOffset = true;
+
+    // HS and GS always have the scratch wave offset in SGPR5 on GFX9.
+    if (ST.getGeneration() >= AMDGPUSubtarget::GFX9 &&
+        (CC == CallingConv::AMDGPU_HS || CC == CallingConv::AMDGPU_GS))
+      PrivateSegmentWaveByteOffsetSystemSGPR = AMDGPU::SGPR5;
+  }
 
   if (ST.isAmdCodeObjectV2(MF)) {
     if (HasStackObjects || MaySpill)

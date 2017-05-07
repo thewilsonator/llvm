@@ -345,6 +345,11 @@ bool LoopIdiomRecognize::isLegalStore(StoreInst *SI, bool &ForMemset,
   if (!SI->isSimple())
     return false;
 
+  // Don't convert stores of non-integral pointer types to memsets (which stores
+  // integers).
+  if (DL->isNonIntegralPointerType(SI->getValueOperand()->getType()))
+    return false;
+
   // Avoid merging nontemporal stores.
   if (SI->getMetadata(LLVMContext::MD_nontemporal))
     return false;
@@ -494,7 +499,7 @@ bool LoopIdiomRecognize::runOnLoopBlock(
     Instruction *Inst = &*I++;
     // Look for memset instructions, which may be optimized to a larger memset.
     if (MemSetInst *MSI = dyn_cast<MemSetInst>(Inst)) {
-      WeakVH InstPtr(&*I);
+      WeakTrackingVH InstPtr(&*I);
       if (!processLoopMemSet(MSI, BECount))
         continue;
       MadeChange = true;
@@ -778,6 +783,11 @@ bool LoopIdiomRecognize::processLoopStridedStore(
   if (NegStride)
     Start = getStartForNegStride(Start, BECount, IntPtr, StoreSize, SE);
 
+  // TODO: ideally we should still be able to generate memset if SCEV expander
+  // is taught to generate the dependencies at the latest point.
+  if (!isSafeToExpand(Start, *SE))
+    return false;
+
   // Okay, we have a strided store "p[i]" of a splattable value.  We can turn
   // this into a memset in the loop preheader now if we want.  However, this
   // would be unsafe to do if there is anything else in the loop that may read
@@ -808,6 +818,11 @@ bool LoopIdiomRecognize::processLoopStridedStore(
     NumBytesS = SE->getMulExpr(NumBytesS, SE->getConstant(IntPtr, StoreSize),
                                SCEV::FlagNUW);
   }
+
+  // TODO: ideally we should still be able to generate memset if SCEV expander
+  // is taught to generate the dependencies at the latest point.
+  if (!isSafeToExpand(NumBytesS, *SE))
+    return false;
 
   Value *NumBytes =
       Expander.expandCodeFor(NumBytesS, IntPtr, Preheader->getTerminator());
@@ -851,7 +866,7 @@ bool LoopIdiomRecognize::processLoopStridedStore(
 
 /// If the stored value is a strided load in the same loop with the same stride
 /// this may be transformable into a memcpy.  This kicks in for stuff like
-///   for (i) A[i] = B[i];
+/// for (i) A[i] = B[i];
 bool LoopIdiomRecognize::processLoopStoreOfLoopLoad(StoreInst *SI,
                                                     const SCEV *BECount) {
   assert(SI->isSimple() && "Expected only non-volatile stores.");

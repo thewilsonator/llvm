@@ -422,7 +422,8 @@ protected:
   // When we if-convert we need to create edge masks. We have to cache values
   // so that we don't end up with exponential recursion/IR.
   typedef DenseMap<std::pair<BasicBlock *, BasicBlock *>, VectorParts>
-      EdgeMaskCache;
+      EdgeMaskCacheTy;
+  typedef DenseMap<BasicBlock *, VectorParts> BlockMaskCacheTy;
 
   /// Create an empty loop, based on the loop ranges of the old loop.
   void createEmptyLoop();
@@ -785,7 +786,8 @@ protected:
   /// Store instructions that should be predicated, as a pair
   ///   <StoreInst, Predicate>
   SmallVector<std::pair<Instruction *, Value *>, 4> PredicatedInstructions;
-  EdgeMaskCache MaskCache;
+  EdgeMaskCacheTy EdgeMaskCache;
+  BlockMaskCacheTy BlockMaskCache;
   /// Trip count of the original loop.
   Value *TripCount;
   /// Trip count of the widened loop (TripCount - TripCount % (VF*UF))
@@ -3584,8 +3586,12 @@ void InnerLoopVectorizer::fixupIVUsers(PHINode *OrigPhi,
       IRBuilder<> B(MiddleBlock->getTerminator());
       Value *CountMinusOne = B.CreateSub(
           CountRoundDown, ConstantInt::get(CountRoundDown->getType(), 1));
-      Value *CMO = B.CreateSExtOrTrunc(CountMinusOne, II.getStep()->getType(),
-                                       "cast.cmo");
+      Value *CMO =
+          !II.getStep()->getType()->isIntegerTy()
+              ? B.CreateCast(Instruction::SIToFP, CountMinusOne,
+                             II.getStep()->getType())
+              : B.CreateSExtOrTrunc(CountMinusOne, II.getStep()->getType());
+      CMO->setName("cast.cmo");
       Value *Escape = II.transform(B, CMO, PSE.getSE(), DL);
       Escape->setName("ind.escape");
       MissingVals[UI] = Escape;
@@ -4200,7 +4206,7 @@ void InnerLoopVectorizer::fixReduction(PHINode *Phi) {
     cast<PHINode>(VecRdxPhi[part])
       ->addIncoming(StartVal, LoopVectorPreHeader);
     cast<PHINode>(VecRdxPhi[part])
-      ->addIncoming(Val[part], LoopVectorBody);
+      ->addIncoming(Val[part], LI->getLoopFor(LoopVectorBody)->getLoopLatch());
   }
 
   // Before each round, move the insertion point right between
@@ -4514,14 +4520,15 @@ void InnerLoopVectorizer::predicateInstructions() {
   for (auto KV : PredicatedInstructions) {
     BasicBlock::iterator I(KV.first);
     BasicBlock *Head = I->getParent();
-    auto *BB = SplitBlock(Head, &*std::next(I), DT, LI);
     auto *T = SplitBlockAndInsertIfThen(KV.second, &*I, /*Unreachable=*/false,
                                         /*BranchWeights=*/nullptr, DT, LI);
     I->moveBefore(T);
     sinkScalarOperands(&*I);
 
-    I->getParent()->setName(Twine("pred.") + I->getOpcodeName() + ".if");
-    BB->setName(Twine("pred.") + I->getOpcodeName() + ".continue");
+    BasicBlock *PredicatedBlock = I->getParent();
+    Twine BBNamePrefix = Twine("pred.") + I->getOpcodeName();
+    PredicatedBlock->setName(BBNamePrefix + ".if");
+    PredicatedBlock->getSingleSuccessor()->setName(BBNamePrefix + ".continue");
 
     // If the instruction is non-void create a Phi node at reconvergence point.
     if (!I->getType()->isVoidTy()) {
@@ -4560,8 +4567,8 @@ InnerLoopVectorizer::createEdgeMask(BasicBlock *Src, BasicBlock *Dst) {
 
   // Look for cached value.
   std::pair<BasicBlock *, BasicBlock *> Edge(Src, Dst);
-  EdgeMaskCache::iterator ECEntryIt = MaskCache.find(Edge);
-  if (ECEntryIt != MaskCache.end())
+  EdgeMaskCacheTy::iterator ECEntryIt = EdgeMaskCache.find(Edge);
+  if (ECEntryIt != EdgeMaskCache.end())
     return ECEntryIt->second;
 
   VectorParts SrcMask = createBlockInMask(Src);
@@ -4580,11 +4587,11 @@ InnerLoopVectorizer::createEdgeMask(BasicBlock *Src, BasicBlock *Dst) {
     for (unsigned part = 0; part < UF; ++part)
       EdgeMask[part] = Builder.CreateAnd(EdgeMask[part], SrcMask[part]);
 
-    MaskCache[Edge] = EdgeMask;
+    EdgeMaskCache[Edge] = EdgeMask;
     return EdgeMask;
   }
 
-  MaskCache[Edge] = SrcMask;
+  EdgeMaskCache[Edge] = SrcMask;
   return SrcMask;
 }
 
@@ -4592,10 +4599,17 @@ InnerLoopVectorizer::VectorParts
 InnerLoopVectorizer::createBlockInMask(BasicBlock *BB) {
   assert(OrigLoop->contains(BB) && "Block is not a part of a loop");
 
+  // Look for cached value.
+  BlockMaskCacheTy::iterator BCEntryIt = BlockMaskCache.find(BB);
+  if (BCEntryIt != BlockMaskCache.end())
+    return BCEntryIt->second;
+
   // Loop incoming mask is all-one.
   if (OrigLoop->getHeader() == BB) {
     Value *C = ConstantInt::get(IntegerType::getInt1Ty(BB->getContext()), 1);
-    return getVectorValue(C);
+    const VectorParts &BlockMask = getVectorValue(C);
+    BlockMaskCache[BB] = BlockMask;
+    return BlockMask;
   }
 
   // This is the block mask. We OR all incoming edges, and with zero.
@@ -4609,6 +4623,7 @@ InnerLoopVectorizer::createBlockInMask(BasicBlock *BB) {
       BlockMask[part] = Builder.CreateOr(BlockMask[part], EM[part]);
   }
 
+  BlockMaskCache[BB] = BlockMask;
   return BlockMask;
 }
 
@@ -5059,11 +5074,10 @@ void InnerLoopVectorizer::updateAnalysis() {
   assert(DT->properlyDominates(LoopBypassBlocks.front(), LoopExitBlock) &&
          "Entry does not dominate exit.");
 
-  // We don't predicate stores by this point, so the vector body should be a
-  // single loop.
-  DT->addNewBlock(LoopVectorBody, LoopVectorPreHeader);
-
-  DT->addNewBlock(LoopMiddleBlock, LoopVectorBody);
+  DT->addNewBlock(LI->getLoopFor(LoopVectorBody)->getHeader(),
+                  LoopVectorPreHeader);
+  DT->addNewBlock(LoopMiddleBlock,
+                  LI->getLoopFor(LoopVectorBody)->getLoopLatch());
   DT->addNewBlock(LoopScalarPreHeader, LoopBypassBlocks[0]);
   DT->changeImmediateDominator(LoopScalarBody, LoopScalarPreHeader);
   DT->changeImmediateDominator(LoopExitBlock, LoopBypassBlocks[0]);
@@ -7164,7 +7178,7 @@ unsigned LoopVectorizationCostModel::getMemoryInstructionCost(Instruction *I,
   if (VF == 1) {
     Type *ValTy = getMemInstValueType(I);
     unsigned Alignment = getMemInstAlignment(I);
-    unsigned AS = getMemInstAlignment(I);
+    unsigned AS = getMemInstAddressSpace(I);
 
     return TTI.getAddressComputationCost(ValTy) +
            TTI.getMemoryOpCost(I->getOpcode(), ValTy, Alignment, AS, I);
@@ -7315,8 +7329,16 @@ unsigned LoopVectorizationCostModel::getInstructionCost(Instruction *I,
       return TTI.getShuffleCost(TargetTransformInfo::SK_ExtractSubvector,
                                 VectorTy, VF - 1, VectorTy);
 
-    // TODO: IF-converted IFs become selects.
-    return 0;
+    // Phi nodes in non-header blocks (not inductions, reductions, etc.) are
+    // converted into select instructions. We require N - 1 selects per phi
+    // node, where N is the number of incoming values.
+    if (VF > 1 && Phi->getParent() != TheLoop->getHeader())
+      return (Phi->getNumIncomingValues() - 1) *
+             TTI.getCmpSelInstrCost(
+                 Instruction::Select, ToVectorTy(Phi->getType(), VF),
+                 ToVectorTy(Type::getInt1Ty(Phi->getContext()), VF));
+
+    return TTI.getCFInstrCost(Instruction::PHI);
   }
   case Instruction::UDiv:
   case Instruction::SDiv:

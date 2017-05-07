@@ -138,7 +138,8 @@ PHIExpression::~PHIExpression() = default;
 // It also wants to hand us SCC's that are unrelated to the phi node we ask
 // about, and have us process them there or risk redoing work.
 // Graph traits over a filter iterator also doesn't work that well here.
-// This SCC finder is specialized to walk use-def chains, and only follows instructions,
+// This SCC finder is specialized to walk use-def chains, and only follows
+// instructions,
 // not generic values (arguments, etc).
 struct TarjanSCC {
 
@@ -170,8 +171,10 @@ private:
           Root[I] = std::min(Root.lookup(I), Root.lookup(Op));
       }
     }
-    // See if we really were the root of a component, by seeing if we still have our DFSNumber.
-    // If we do, we are the root of the component, and we have completed a component. If we do not,
+    // See if we really were the root of a component, by seeing if we still have
+    // our DFSNumber.
+    // If we do, we are the root of the component, and we have completed a
+    // component. If we do not,
     // we are not the root of a component, and belong on the component stack.
     if (Root.lookup(I) == OurDFS) {
       unsigned ComponentID = Components.size();
@@ -392,7 +395,6 @@ namespace {
 class NewGVN {
   Function &F;
   DominatorTree *DT;
-  AssumptionCache *AC;
   const TargetLibraryInfo *TLI;
   AliasAnalysis *AA;
   MemorySSA *MSSA;
@@ -402,6 +404,7 @@ class NewGVN {
   BumpPtrAllocator ExpressionAllocator;
   ArrayRecycler<Value *> ArgRecycler;
   TarjanSCC SCCFinder;
+  const SimplifyQuery SQ;
 
   // Number of function arguments, used by ranking
   unsigned int NumFuncArgs;
@@ -501,8 +504,9 @@ public:
   NewGVN(Function &F, DominatorTree *DT, AssumptionCache *AC,
          TargetLibraryInfo *TLI, AliasAnalysis *AA, MemorySSA *MSSA,
          const DataLayout &DL)
-      : F(F), DT(DT), AC(AC), TLI(TLI), AA(AA), MSSA(MSSA), DL(DL),
-        PredInfo(make_unique<PredicateInfo>(F, *DT, *AC)) {}
+      : F(F), DT(DT), TLI(TLI), AA(AA), MSSA(MSSA), DL(DL),
+        PredInfo(make_unique<PredicateInfo>(F, *DT, *AC)), SQ(DL, TLI, DT, AC) {
+  }
   bool runGVN();
 
 private:
@@ -779,8 +783,7 @@ const Expression *NewGVN::createBinaryExpression(unsigned Opcode, Type *T,
   E->op_push_back(lookupOperandLeader(Arg1));
   E->op_push_back(lookupOperandLeader(Arg2));
 
-  Value *V = SimplifyBinOp(Opcode, E->getOperand(0), E->getOperand(1), DL, TLI,
-                           DT, AC);
+  Value *V = SimplifyBinOp(Opcode, E->getOperand(0), E->getOperand(1), SQ);
   if (const Expression *SimplifiedE = checkSimplificationResults(E, nullptr, V))
     return SimplifiedE;
   return E;
@@ -861,8 +864,8 @@ const Expression *NewGVN::createExpression(Instruction *I) {
            "Wrong types on cmp instruction");
     assert((E->getOperand(0)->getType() == I->getOperand(0)->getType() &&
             E->getOperand(1)->getType() == I->getOperand(1)->getType()));
-    Value *V = SimplifyCmpInst(Predicate, E->getOperand(0), E->getOperand(1),
-                               DL, TLI, DT, AC);
+    Value *V =
+        SimplifyCmpInst(Predicate, E->getOperand(0), E->getOperand(1), SQ);
     if (const Expression *SimplifiedE = checkSimplificationResults(E, I, V))
       return SimplifiedE;
   } else if (isa<SelectInst>(I)) {
@@ -871,23 +874,23 @@ const Expression *NewGVN::createExpression(Instruction *I) {
       assert(E->getOperand(1)->getType() == I->getOperand(1)->getType() &&
              E->getOperand(2)->getType() == I->getOperand(2)->getType());
       Value *V = SimplifySelectInst(E->getOperand(0), E->getOperand(1),
-                                    E->getOperand(2), DL, TLI, DT, AC);
+                                    E->getOperand(2), SQ);
       if (const Expression *SimplifiedE = checkSimplificationResults(E, I, V))
         return SimplifiedE;
     }
   } else if (I->isBinaryOp()) {
-    Value *V = SimplifyBinOp(E->getOpcode(), E->getOperand(0), E->getOperand(1),
-                             DL, TLI, DT, AC);
+    Value *V =
+        SimplifyBinOp(E->getOpcode(), E->getOperand(0), E->getOperand(1), SQ);
     if (const Expression *SimplifiedE = checkSimplificationResults(E, I, V))
       return SimplifiedE;
   } else if (auto *BI = dyn_cast<BitCastInst>(I)) {
-    Value *V = SimplifyInstruction(BI, DL, TLI, DT, AC);
+    Value *V =
+        SimplifyCastInst(BI->getOpcode(), BI->getOperand(0), BI->getType(), SQ);
     if (const Expression *SimplifiedE = checkSimplificationResults(E, I, V))
       return SimplifiedE;
   } else if (isa<GetElementPtrInst>(I)) {
-    Value *V = SimplifyGEPInst(E->getType(),
-                               ArrayRef<Value *>(E->op_begin(), E->op_end()),
-                               DL, TLI, DT, AC);
+    Value *V = SimplifyGEPInst(
+        E->getType(), ArrayRef<Value *>(E->op_begin(), E->op_end()), SQ);
     if (const Expression *SimplifiedE = checkSimplificationResults(E, I, V))
       return SimplifiedE;
   } else if (AllConstant) {
@@ -1437,18 +1440,15 @@ const Expression *NewGVN::performSymbolicPHIEvaluation(Instruction *I) {
   // True if one of the incoming phi edges is a backedge.
   bool HasBackedge = false;
   // All constant tracks the state of whether all the *original* phi operands
-  // were constant.
-  // This is really shorthand for "this phi cannot cycle due to forward
-  // propagation", as any
-  // change in value of the phi is guaranteed not to later change the value of
-  // the phi.
+  // were constant. This is really shorthand for "this phi cannot cycle due
+  // to forward propagation", as any change in value of the phi is guaranteed
+  // not to later change the value of the phi.
   // IE it can't be v = phi(undef, v+1)
   bool AllConstant = true;
   auto *E =
       cast<PHIExpression>(createPHIExpression(I, HasBackedge, AllConstant));
   // We match the semantics of SimplifyPhiNode from InstructionSimplify here.
-
-  // See if all arguaments are the same.
+  // See if all arguments are the same.
   // We track if any were undef because they need special handling.
   bool HasUndef = false;
   auto Filtered = make_filter_range(E->operands(), [&](const Value *Arg) {
@@ -1625,15 +1625,15 @@ const Expression *NewGVN::performSymbolicCmpEvaluation(Instruction *I) {
         if (PBranch->TrueEdge) {
           // If we know the previous predicate is true and we are in the true
           // edge then we may be implied true or false.
-          if (CmpInst::isImpliedTrueByMatchingCmp(OurPredicate,
-                                                  BranchPredicate)) {
+          if (CmpInst::isImpliedTrueByMatchingCmp(BranchPredicate,
+                                                  OurPredicate)) {
             addPredicateUsers(PI, I);
             return createConstantExpression(
                 ConstantInt::getTrue(CI->getType()));
           }
 
-          if (CmpInst::isImpliedFalseByMatchingCmp(OurPredicate,
-                                                   BranchPredicate)) {
+          if (CmpInst::isImpliedFalseByMatchingCmp(BranchPredicate,
+                                                   OurPredicate)) {
             addPredicateUsers(PI, I);
             return createConstantExpression(
                 ConstantInt::getFalse(CI->getType()));
@@ -2254,12 +2254,13 @@ void NewGVN::initializeCongruenceClasses(Function &F) {
   MemoryAccessToClass[MSSA->getLiveOnEntryDef()] =
       createMemoryClass(MSSA->getLiveOnEntryDef());
 
-  for (auto &B : F) {
+  for (auto DTN : nodes(DT)) {
+    BasicBlock *BB = DTN->getBlock();
     // All MemoryAccesses are equivalent to live on entry to start. They must
     // be initialized to something so that initial changes are noticed. For
     // the maximal answer, we initialize them all to be the same as
     // liveOnEntry.
-    auto *MemoryBlockDefs = MSSA->getBlockDefs(&B);
+    auto *MemoryBlockDefs = MSSA->getBlockDefs(BB);
     if (MemoryBlockDefs)
       for (const auto &Def : *MemoryBlockDefs) {
         MemoryAccessToClass[&Def] = TOPClass;
@@ -2274,7 +2275,7 @@ void NewGVN::initializeCongruenceClasses(Function &F) {
         if (MD && isa<StoreInst>(MD->getMemoryInst()))
           TOPClass->incStoreCount();
       }
-    for (auto &I : B) {
+    for (auto &I : *BB) {
       // Don't insert void terminators into the class. We don't value number
       // them, and they just end up sitting in TOP.
       if (isa<TerminatorInst>(I) && I.getType()->isVoidTy())
@@ -2493,12 +2494,11 @@ void NewGVN::verifyMemoryCongruency() const {
       continue;
     if (CC->getStoreCount() != 0) {
       assert((CC->getStoredValue() || !isa<StoreInst>(CC->getLeader())) &&
-             "Any class with a store as a "
-             "leader should have a "
-             "representative stored value\n");
+             "Any class with a store as a leader should have a "
+             "representative stored value");
       assert(CC->getMemoryLeader() &&
-             "Any congruence class with a store should "
-             "have a representative access\n");
+             "Any congruence class with a store should have a "
+             "representative access");
     }
 
     if (CC->getMemoryLeader())
@@ -2518,14 +2518,11 @@ void NewGVN::verifyMemoryCongruency() const {
   auto ReachableAccessPred =
       [&](const std::pair<const MemoryAccess *, CongruenceClass *> Pair) {
         bool Result = ReachableBlocks.count(Pair.first->getBlock());
-        if (!Result)
+        if (!Result || MSSA->isLiveOnEntryDef(Pair.first) ||
+            MemoryToDFSNum(Pair.first) == 0)
           return false;
-        if (MSSA->isLiveOnEntryDef(Pair.first))
-          return true;
         if (auto *MemDef = dyn_cast<MemoryDef>(Pair.first))
           return !isInstructionTriviallyDead(MemDef->getMemoryInst());
-        if (MemoryToDFSNum(Pair.first) == 0)
-          return false;
         return true;
       };
 
@@ -2719,23 +2716,11 @@ bool NewGVN::runGVN() {
   }
 
   // Now a standard depth first ordering of the domtree is equivalent to RPO.
-  auto DFI = df_begin(DT->getRootNode());
-  for (auto DFE = df_end(DT->getRootNode()); DFI != DFE; ++DFI) {
-    BasicBlock *B = DFI->getBlock();
+  for (auto DTN : depth_first(DT->getRootNode())) {
+    BasicBlock *B = DTN->getBlock();
     const auto &BlockRange = assignDFSNumbers(B, ICount);
     BlockInstRange.insert({B, BlockRange});
     ICount += BlockRange.second - BlockRange.first;
-  }
-
-  // Handle forward unreachable blocks and figure out which blocks
-  // have single preds.
-  for (auto &B : F) {
-    // Assign numbers to unreachable blocks.
-    if (!DFI.nodeVisited(DT->getNode(&B))) {
-      const auto &BlockRange = assignDFSNumbers(&B, ICount);
-      BlockInstRange.insert({&B, BlockRange});
-      ICount += BlockRange.second - BlockRange.first;
-    }
   }
 
   TouchedInstructions.resize(ICount);

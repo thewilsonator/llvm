@@ -273,10 +273,11 @@ public:
   Value *getPointerOperand() { return getOperand(0); }
   const Value *getPointerOperand() const { return getOperand(0); }
   static unsigned getPointerOperandIndex() { return 0U; }
+  Type *getPointerOperandType() const { return getPointerOperand()->getType(); }
 
   /// Returns the address space of the pointer operand.
   unsigned getPointerAddressSpace() const {
-    return getPointerOperand()->getType()->getPointerAddressSpace();
+    return getPointerOperandType()->getPointerAddressSpace();
   }
 
   // Methods for support type inquiry through isa, cast, and dyn_cast:
@@ -397,10 +398,11 @@ public:
   Value *getPointerOperand() { return getOperand(1); }
   const Value *getPointerOperand() const { return getOperand(1); }
   static unsigned getPointerOperandIndex() { return 1U; }
+  Type *getPointerOperandType() const { return getPointerOperand()->getType(); }
 
   /// Returns the address space of the pointer operand.
   unsigned getPointerAddressSpace() const {
-    return getPointerOperand()->getType()->getPointerAddressSpace();
+    return getPointerOperandType()->getPointerAddressSpace();
   }
 
   // Methods for support type inquiry through isa, cast, and dyn_cast:
@@ -1656,11 +1658,17 @@ public:
   /// adds the attribute to the list of attributes.
   void addAttribute(unsigned i, Attribute Attr);
 
+  /// Adds the attribute to the indicated argument
+  void addParamAttr(unsigned ArgNo, Attribute::AttrKind Kind);
+
   /// removes the attribute from the list of attributes.
   void removeAttribute(unsigned i, Attribute::AttrKind Kind);
 
   /// removes the attribute from the list of attributes.
   void removeAttribute(unsigned i, StringRef Kind);
+
+  /// Removes the attribute from the given argument
+  void removeParamAttr(unsigned ArgNo, Attribute::AttrKind Kind);
 
   /// adds the dereferenceable attribute to the list of attributes.
   void addDereferenceableAttr(unsigned i, uint64_t Bytes);
@@ -1681,8 +1689,11 @@ public:
     return hasFnAttrImpl(Kind);
   }
 
-  /// Determine whether the call or the callee has the given attributes.
-  bool paramHasAttr(unsigned i, Attribute::AttrKind Kind) const;
+  /// Determine whether the return value has the given attribute.
+  bool hasRetAttr(Attribute::AttrKind Kind) const;
+
+  /// Determine whether the argument or parameter has the given attribute.
+  bool paramHasAttr(unsigned ArgNo, Attribute::AttrKind Kind) const;
 
   /// Get the attribute of a given kind at a position.
   Attribute getAttribute(unsigned i, Attribute::AttrKind Kind) const {
@@ -1709,9 +1720,12 @@ public:
   ///     (\p i - 1) in the operand list.
   bool dataOperandHasImpliedAttr(unsigned i, Attribute::AttrKind Kind) const;
 
+  /// Extract the alignment of the return value.
+  unsigned getRetAlignment() const { return Attrs.getRetAlignment(); }
+
   /// Extract the alignment for a call or parameter (0=unknown).
-  unsigned getParamAlignment(unsigned i) const {
-    return Attrs.getParamAlignment(i);
+  unsigned getParamAlignment(unsigned ArgNo) const {
+    return Attrs.getParamAlignment(ArgNo);
   }
 
   /// Extract the number of dereferenceable bytes for a call or
@@ -1726,11 +1740,9 @@ public:
     return Attrs.getDereferenceableOrNullBytes(i);
   }
 
-  /// @brief Determine if the parameter or return value is marked with NoAlias
-  /// attribute.
-  /// @param n The parameter to check. 1 is the first parameter, 0 is the return
-  bool doesNotAlias(unsigned n) const {
-    return Attrs.hasAttribute(n, Attribute::NoAlias);
+  /// @brief Determine if the return value is marked with NoAlias attribute.
+  bool returnDoesNotAlias() const {
+    return Attrs.hasAttribute(AttributeList::ReturnIndex, Attribute::NoAlias);
   }
 
   /// Return true if the call should not be treated as a call to a
@@ -1821,7 +1833,7 @@ public:
       return false;
 
     // Be friendly and also check the callee.
-    return paramHasAttr(1, Attribute::StructRet);
+    return paramHasAttr(0, Attribute::StructRet);
   }
 
   /// Determine if any call argument is an aggregate passed by value.
@@ -3742,11 +3754,17 @@ public:
   /// adds the attribute to the list of attributes.
   void addAttribute(unsigned i, Attribute Attr);
 
+  /// Adds the attribute to the indicated argument
+  void addParamAttr(unsigned ArgNo, Attribute::AttrKind Kind);
+
   /// removes the attribute from the list of attributes.
   void removeAttribute(unsigned i, Attribute::AttrKind Kind);
 
   /// removes the attribute from the list of attributes.
   void removeAttribute(unsigned i, StringRef Kind);
+
+  /// Removes the attribute from the given argument
+  void removeParamAttr(unsigned ArgNo, Attribute::AttrKind Kind);
 
   /// adds the dereferenceable attribute to the list of attributes.
   void addDereferenceableAttr(unsigned i, uint64_t Bytes);
@@ -3767,8 +3785,11 @@ public:
     return hasFnAttrImpl(Kind);
   }
 
-  /// Determine whether the call or the callee has the given attributes.
-  bool paramHasAttr(unsigned i, Attribute::AttrKind Kind) const;
+  /// Determine whether the return value has the given attribute.
+  bool hasRetAttr(Attribute::AttrKind Kind) const;
+
+  /// Determine whether the argument or parameter has the given attribute.
+  bool paramHasAttr(unsigned ArgNo, Attribute::AttrKind Kind) const;
 
   /// Get the attribute of a given kind at a position.
   Attribute getAttribute(unsigned i, Attribute::AttrKind Kind) const {
@@ -3796,9 +3817,12 @@ public:
   ///     (\p i - 1) in the operand list.
   bool dataOperandHasImpliedAttr(unsigned i, Attribute::AttrKind Kind) const;
 
+  /// Extract the alignment of the return value.
+  unsigned getRetAlignment() const { return Attrs.getRetAlignment(); }
+
   /// Extract the alignment for a call or parameter (0=unknown).
-  unsigned getParamAlignment(unsigned i) const {
-    return Attrs.getParamAlignment(i);
+  unsigned getParamAlignment(unsigned ArgNo) const {
+    return Attrs.getParamAlignment(ArgNo);
   }
 
   /// Extract the number of dereferenceable bytes for a call or
@@ -3813,11 +3837,9 @@ public:
     return Attrs.getDereferenceableOrNullBytes(i);
   }
 
-  /// @brief Determine if the parameter or return value is marked with NoAlias
-  /// attribute.
-  /// @param n The parameter to check. 1 is the first parameter, 0 is the return
-  bool doesNotAlias(unsigned n) const {
-    return Attrs.hasAttribute(n, Attribute::NoAlias);
+  /// @brief Determine if the return value is marked with NoAlias attribute.
+  bool returnDoesNotAlias() const {
+    return Attrs.hasAttribute(AttributeList::ReturnIndex, Attribute::NoAlias);
   }
 
   /// Return true if the call should not be treated as a call to a
@@ -3902,7 +3924,7 @@ public:
       return false;
 
     // Be friendly and also check the callee.
-    return paramHasAttr(1, Attribute::StructRet);
+    return paramHasAttr(0, Attribute::StructRet);
   }
 
   /// Determine if any call argument is an aggregate passed by value.

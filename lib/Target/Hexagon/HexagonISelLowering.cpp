@@ -635,7 +635,7 @@ HexagonTargetLowering::LowerReturn(SDValue Chain, CallingConv::ID CallConv,
   return DAG.getNode(HexagonISD::RET_FLAG, dl, MVT::Other, RetOps);
 }
 
-bool HexagonTargetLowering::mayBeEmittedAsTailCall(CallInst *CI) const {
+bool HexagonTargetLowering::mayBeEmittedAsTailCall(const CallInst *CI) const {
   // If either no tail call or told not to tail call at all, don't.
   auto Attr =
       CI->getParent()->getParent()->getFnAttribute("disable-tail-calls");
@@ -1720,8 +1720,13 @@ HexagonTargetLowering::LowerToTLSGeneralDynamicModel(GlobalAddressSDNode *GA,
   Chain = DAG.getCopyToReg(DAG.getEntryNode(), dl, Hexagon::R0, Chain, InFlag);
   InFlag = Chain.getValue(1);
 
+  unsigned Flags =
+      static_cast<const HexagonSubtarget &>(DAG.getSubtarget()).useLongCalls()
+          ? HexagonII::MO_GDPLT | HexagonII::HMOTF_ConstExtended
+          : HexagonII::MO_GDPLT;
+
   return GetDynamicTLSAddr(DAG, Chain, GA, InFlag, PtrVT,
-                           Hexagon::R0, HexagonII::MO_GDPLT);
+                           Hexagon::R0, Flags);
 }
 
 //
