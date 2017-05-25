@@ -32,6 +32,10 @@ public:
   uint32_t length() const { return RecordData.size(); }
   Kind kind() const { return Type; }
   ArrayRef<uint8_t> data() const { return RecordData; }
+  StringRef str_data() const {
+    return StringRef(reinterpret_cast<const char *>(RecordData.data()),
+                     RecordData.size());
+  }
 
   ArrayRef<uint8_t> content() const {
     return RecordData.drop_front(sizeof(RecordPrefix));
@@ -50,8 +54,10 @@ public:
 
 template <typename Kind>
 struct VarStreamArrayExtractor<codeview::CVRecord<Kind>> {
-  Error operator()(BinaryStreamRef Stream, uint32_t &Len,
-                   codeview::CVRecord<Kind> &Item) const {
+  typedef void ContextType;
+
+  static Error extract(BinaryStreamRef Stream, uint32_t &Len,
+                       codeview::CVRecord<Kind> &Item) {
     using namespace codeview;
     const RecordPrefix *Prefix = nullptr;
     BinaryStreamReader Reader(Stream);

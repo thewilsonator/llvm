@@ -88,6 +88,14 @@ class SIMachineFunctionInfo final : public AMDGPUMachineFunction {
   unsigned ScratchRSrcReg;
   unsigned ScratchWaveOffsetReg;
 
+  // This is the current function's incremented size from the kernel's scratch
+  // wave offset register. For an entry function, this is exactly the same as
+  // the ScratchWaveOffsetReg.
+  unsigned FrameOffsetReg;
+
+  // Top of the stack SGPR offset derived from the ScratchWaveOffsetReg.
+  unsigned StackPtrOffsetReg;
+
   // Input registers for non-HSA ABI
   unsigned PrivateMemoryPtrUserSGPR;
 
@@ -133,14 +141,12 @@ class SIMachineFunctionInfo final : public AMDGPUMachineFunction {
   AMDGPUBufferPseudoSourceValue BufferPSV;
   AMDGPUImagePseudoSourceValue ImagePSV;
 
-public:
-  // FIXME: Make private
+private:
   unsigned LDSWaveSpillSize;
   unsigned ScratchOffsetReg;
   unsigned NumUserSGPRs;
   unsigned NumSystemSGPRs;
 
-private:
   bool HasSpilledSGPRs;
   bool HasSpilledVGPRs;
   bool HasNonSpillStackObjects;
@@ -366,9 +372,24 @@ public:
     return ScratchWaveOffsetReg;
   }
 
+  unsigned getFrameOffsetReg() const {
+    return FrameOffsetReg;
+  }
+
+  void setStackPtrOffsetReg(unsigned Reg) {
+    assert(Reg != AMDGPU::NoRegister && "Should never be unset");
+    StackPtrOffsetReg = Reg;
+  }
+
+  unsigned getStackPtrOffsetReg() const {
+    return StackPtrOffsetReg;
+  }
+
   void setScratchWaveOffsetReg(unsigned Reg) {
     assert(Reg != AMDGPU::NoRegister && "Should never be unset");
     ScratchWaveOffsetReg = Reg;
+    if (isEntryFunction())
+      FrameOffsetReg = ScratchWaveOffsetReg;
   }
 
   unsigned getQueuePtrUserSGPR() const {
@@ -533,6 +554,10 @@ public:
       return AMDGPU::VGPR2;
     }
     llvm_unreachable("unexpected dimension");
+  }
+
+  unsigned getLDSWaveSpillSize() const {
+    return LDSWaveSpillSize;
   }
 
   const AMDGPUBufferPseudoSourceValue *getBufferPSV() const {

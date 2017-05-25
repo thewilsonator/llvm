@@ -363,13 +363,22 @@ int AMDGPUTTIImpl::getVectorInstrCost(unsigned Opcode, Type *ValTy,
                                       unsigned Index) {
   switch (Opcode) {
   case Instruction::ExtractElement:
-  case Instruction::InsertElement:
+  case Instruction::InsertElement: {
+    unsigned EltSize
+      = DL.getTypeSizeInBits(cast<VectorType>(ValTy)->getElementType());
+    if (EltSize < 32) {
+      if (EltSize == 16 && Index == 0 && ST->has16BitInsts())
+        return 0;
+      return BaseT::getVectorInstrCost(Opcode, ValTy, Index);
+    }
+
     // Extracts are just reads of a subregister, so are free. Inserts are
     // considered free because we don't want to have any cost for scalarizing
     // operations, and we don't have to copy into a different register class.
 
     // Dynamic indexing isn't free and is best avoided.
     return Index == ~0u ? 2 : 0;
+  }
   default:
     return BaseT::getVectorInstrCost(Opcode, ValTy, Index);
   }
@@ -426,16 +435,24 @@ static bool isArgPassedInSGPR(const Argument *A) {
   const Function *F = A->getParent();
 
   // Arguments to compute shaders are never a source of divergence.
-  if (!AMDGPU::isShader(F->getCallingConv()))
+  CallingConv::ID CC = F->getCallingConv();
+  switch (CC) {
+  case CallingConv::AMDGPU_KERNEL:
+  case CallingConv::SPIR_KERNEL:
     return true;
-
-  // For non-compute shaders, SGPR inputs are marked with either inreg or byval.
-  if (F->getAttributes().hasParamAttribute(A->getArgNo(), Attribute::InReg) ||
-      F->getAttributes().hasParamAttribute(A->getArgNo(), Attribute::ByVal))
-    return true;
-
-  // Everything else is in VGPRs.
-  return false;
+  case CallingConv::AMDGPU_VS:
+  case CallingConv::AMDGPU_HS:
+  case CallingConv::AMDGPU_GS:
+  case CallingConv::AMDGPU_PS:
+  case CallingConv::AMDGPU_CS:
+    // For non-compute shaders, SGPR inputs are marked with either inreg or byval.
+    // Everything else is in VGPRs.
+    return F->getAttributes().hasParamAttribute(A->getArgNo(), Attribute::InReg) ||
+           F->getAttributes().hasParamAttribute(A->getArgNo(), Attribute::ByVal);
+  default:
+    // TODO: Should calls support inreg for SGPR inputs?
+    return false;
+  }
 }
 
 ///
@@ -470,4 +487,27 @@ bool AMDGPUTTIImpl::isSourceOfDivergence(const Value *V) const {
     return true;
 
   return false;
+}
+
+unsigned AMDGPUTTIImpl::getShuffleCost(TTI::ShuffleKind Kind, Type *Tp, int Index,
+                                       Type *SubTp) {
+  if (ST->hasVOP3PInsts()) {
+    VectorType *VT = cast<VectorType>(Tp);
+    if (VT->getNumElements() == 2 &&
+        DL.getTypeSizeInBits(VT->getElementType()) == 16) {
+      // With op_sel VOP3P instructions freely can access the low half or high
+      // half of a register, so any swizzle is free.
+
+      switch (Kind) {
+      case TTI::SK_Broadcast:
+      case TTI::SK_Reverse:
+      case TTI::SK_PermuteSingleSrc:
+        return 0;
+      default:
+        break;
+      }
+    }
+  }
+
+  return BaseT::getShuffleCost(Kind, Tp, Index, SubTp);
 }

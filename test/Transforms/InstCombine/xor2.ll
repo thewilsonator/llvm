@@ -57,17 +57,6 @@ define i32 @test3(i32 %tmp1) {
   ret i32 %ov110
 }
 
-define i32 @test4(i32 %A, i32 %B) {
-; CHECK-LABEL: @test4(
-; CHECK-NEXT:    [[TMP1:%.*]] = ashr i32 %A, %B
-; CHECK-NEXT:    ret i32 [[TMP1]]
-;
-  %1 = xor i32 %A, -1
-  %2 = ashr i32 %1, %B
-  %3 = xor i32 %2, -1
-  ret i32 %3
-}
-
 ; defect-2 in rdar://12329730
 ; (X^C1) >> C2) ^ C3 -> (X>>C2) ^ ((C1>>C2)^C3)
 ;   where the "X" has more than one use
@@ -188,6 +177,81 @@ define i32 @test11(i32 %A, i32 %B) {
   %not = xor i32 %A, -1
   %xor2 = xor i32 %not, %B
   %and = and i32 %xor1, %xor2
+  ret i32 %and
+}
+
+define i32 @test11b(i32 %A, i32 %B) {
+; CHECK-LABEL: @test11b(
+; CHECK-NEXT:    ret i32 0
+;
+  %xor1 = xor i32 %B, %A
+  %not = xor i32 %A, -1
+  %xor2 = xor i32 %not, %B
+  %and = and i32 %xor2, %xor1
+  ret i32 %and
+}
+
+define i32 @test11c(i32 %A, i32 %B) {
+; CHECK-LABEL: @test11c(
+; CHECK-NEXT:    [[XOR1:%.*]] = xor i32 [[A:%.*]], [[B:%.*]]
+; CHECK-NEXT:    [[NOT:%.*]] = xor i32 [[A]], -1
+; CHECK-NEXT:    [[XOR2:%.*]] = xor i32 [[NOT]], [[B]]
+; CHECK-NEXT:    [[AND:%.*]] = and i32 [[XOR1]], [[XOR2]]
+; CHECK-NEXT:    ret i32 [[AND]]
+;
+  %xor1 = xor i32 %A, %B
+  %not = xor i32 %A, -1
+  %xor2 = xor i32 %not, %B
+  %and = and i32 %xor1, %xor2
+  ret i32 %and
+}
+
+define i32 @test11d(i32 %A, i32 %B) {
+; CHECK-LABEL: @test11d(
+; CHECK-NEXT:    [[XOR1:%.*]] = xor i32 [[A:%.*]], [[B:%.*]]
+; CHECK-NEXT:    [[NOT:%.*]] = xor i32 [[A]], -1
+; CHECK-NEXT:    [[XOR2:%.*]] = xor i32 [[NOT]], [[B]]
+; CHECK-NEXT:    [[AND:%.*]] = and i32 [[XOR2]], [[XOR1]]
+; CHECK-NEXT:    ret i32 [[AND]]
+;
+  %xor1 = xor i32 %A, %B
+  %not = xor i32 %A, -1
+  %xor2 = xor i32 %not, %B
+  %and = and i32 %xor2, %xor1
+  ret i32 %and
+}
+
+define i32 @test11e(i32 %A, i32 %B, i32 %C) {
+; CHECK-LABEL: @test11e(
+; CHECK-NEXT:    [[FORCE:%.*]] = mul i32 [[B:%.*]], [[C:%.*]]
+; CHECK-NEXT:    [[XOR1:%.*]] = xor i32 [[FORCE]], [[A:%.*]]
+; CHECK-NEXT:    [[NOT:%.*]] = xor i32 [[A]], -1
+; CHECK-NEXT:    [[XOR2:%.*]] = xor i32 [[FORCE]], [[NOT]]
+; CHECK-NEXT:    [[AND:%.*]] = and i32 [[XOR1]], [[XOR2]]
+; CHECK-NEXT:    ret i32 [[AND]]
+;
+  %force = mul i32 %B, %C
+  %xor1 = xor i32 %force, %A
+  %not = xor i32 %A, -1
+  %xor2 = xor i32 %force, %not
+  %and = and i32 %xor1, %xor2
+  ret i32 %and
+}
+
+define i32 @test11f(i32 %A, i32 %B, i32 %C) {
+; CHECK-LABEL: @test11f(
+; CHECK-NEXT:    [[FORCE:%.*]] = mul i32 [[B:%.*]], [[C:%.*]]
+; CHECK-NEXT:    [[XOR1:%.*]] = xor i32 [[FORCE]], [[A:%.*]]
+; CHECK-NEXT:    [[NOT:%.*]] = xor i32 [[A]], -1
+; CHECK-NEXT:    [[XOR2:%.*]] = xor i32 [[FORCE]], [[NOT]]
+; CHECK-NEXT:    [[AND:%.*]] = and i32 [[XOR2]], [[XOR1]]
+; CHECK-NEXT:    ret i32 [[AND]]
+;
+  %force = mul i32 %B, %C
+  %xor1 = xor i32 %force, %A
+  %not = xor i32 %A, -1
+  %xor2 = xor i32 %force, %not
+  %and = and i32 %xor2, %xor1
   ret i32 %and
 }
 

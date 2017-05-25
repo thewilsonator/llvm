@@ -21,6 +21,7 @@
 #include "llvm/IR/SymbolTableListTraits.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Support/CBindingWrapping.h"
+#include "llvm/Support/Compiler.h"
 #include "llvm-c/Types.h"
 #include <cassert>
 #include <cstddef>
@@ -31,7 +32,9 @@ class CallInst;
 class Function;
 class LandingPadInst;
 class LLVMContext;
+class Module;
 class TerminatorInst;
+class ValueSymbolTable;
 
 /// \brief LLVM Basic Block Representation
 ///
@@ -48,10 +51,10 @@ class TerminatorInst;
 /// occur because it may be useful in the intermediate stage of constructing or
 /// modifying a program. However, the verifier will ensure that basic blocks
 /// are "well formed".
-class BasicBlock : public Value, // Basic blocks are data objects also
-                   public ilist_node_with_parent<BasicBlock, Function> {
+class BasicBlock final : public Value, // Basic blocks are data objects also
+                         public ilist_node_with_parent<BasicBlock, Function> {
 public:
-  typedef SymbolTableList<Instruction> InstListType;
+  using InstListType = SymbolTableList<Instruction>;
 
 private:
   friend class BlockAddress;
@@ -74,16 +77,16 @@ private:
 public:
   BasicBlock(const BasicBlock &) = delete;
   BasicBlock &operator=(const BasicBlock &) = delete;
-  ~BasicBlock() override;
+  ~BasicBlock();
 
   /// \brief Get the context in which this basic block lives.
   LLVMContext &getContext() const;
 
   /// Instruction iterators...
-  typedef InstListType::iterator iterator;
-  typedef InstListType::const_iterator const_iterator;
-  typedef InstListType::reverse_iterator reverse_iterator;
-  typedef InstListType::const_reverse_iterator const_reverse_iterator;
+  using iterator = InstListType::iterator;
+  using const_iterator = InstListType::const_iterator;
+  using reverse_iterator = InstListType::reverse_iterator;
+  using const_reverse_iterator = InstListType::const_reverse_iterator;
 
   /// \brief Creates a new BasicBlock.
   ///

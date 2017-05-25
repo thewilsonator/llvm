@@ -25,7 +25,6 @@
 #include "llvm/LTO/LTOBackend.h"
 #include "llvm/Linker/IRMover.h"
 #include "llvm/Object/IRObjectFile.h"
-#include "llvm/Object/ModuleSummaryIndexObjectFile.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -115,7 +114,10 @@ static void computeCacheKey(
   AddUnsigned((unsigned)Conf.Options.DebuggerTuning);
   for (auto &A : Conf.MAttrs)
     AddString(A);
-  AddUnsigned(Conf.RelocModel);
+  if (Conf.RelocModel)
+    AddUnsigned(*Conf.RelocModel);
+  else
+    AddUnsigned(-1);
   AddUnsigned(Conf.CodeModel);
   AddUnsigned(Conf.CGOptLevel);
   AddUnsigned(Conf.CGFileType);
@@ -275,13 +277,14 @@ void llvm::thinLTOResolveWeakForLinkerInIndex(
   // when needed.
   DenseSet<GlobalValueSummary *> GlobalInvolvedWithAlias;
   for (auto &I : Index)
-    for (auto &S : I.second)
+    for (auto &S : I.second.SummaryList)
       if (auto AS = dyn_cast<AliasSummary>(S.get()))
         GlobalInvolvedWithAlias.insert(&AS->getAliasee());
 
   for (auto &I : Index)
-    thinLTOResolveWeakForLinkerGUID(I.second, I.first, GlobalInvolvedWithAlias,
-                                    isPrevailing, recordNewLinkage);
+    thinLTOResolveWeakForLinkerGUID(I.second.SummaryList, I.first,
+                                    GlobalInvolvedWithAlias, isPrevailing,
+                                    recordNewLinkage);
 }
 
 static void thinLTOInternalizeAndPromoteGUID(
@@ -302,7 +305,7 @@ void llvm::thinLTOInternalizeAndPromoteInIndex(
     ModuleSummaryIndex &Index,
     function_ref<bool(StringRef, GlobalValue::GUID)> isExported) {
   for (auto &I : Index)
-    thinLTOInternalizeAndPromoteGUID(I.second, I.first, isExported);
+    thinLTOInternalizeAndPromoteGUID(I.second.SummaryList, I.first, isExported);
 }
 
 // Requires a destructor for std::vector<InputModule>.
@@ -415,7 +418,8 @@ void LTO::addSymbolToGlobalRes(const InputFile::Symbol &Sym,
   // Flag as visible outside of ThinLTO if visible from a regular object or
   // if this is a reference in the regular LTO partition.
   GlobalRes.VisibleOutsideThinLTO |=
-      (Res.VisibleToRegularObj || (Partition == GlobalResolution::RegularLTO));
+      (Res.VisibleToRegularObj || Sym.isUsed() ||
+       Partition == GlobalResolution::RegularLTO);
 }
 
 static void writeToResolutionFile(raw_ostream &OS, InputFile *Input,
@@ -591,11 +595,9 @@ Error LTO::addThinLTO(BitcodeModule BM,
                       ArrayRef<InputFile::Symbol> Syms,
                       const SymbolResolution *&ResI,
                       const SymbolResolution *ResE) {
-  Expected<std::unique_ptr<ModuleSummaryIndex>> SummaryOrErr = BM.getSummary();
-  if (!SummaryOrErr)
-    return SummaryOrErr.takeError();
-  ThinLTO.CombinedIndex.mergeFrom(std::move(*SummaryOrErr),
-                                  ThinLTO.ModuleMap.size());
+  if (Error Err =
+          BM.readSummary(ThinLTO.CombinedIndex, ThinLTO.ModuleMap.size()))
+    return Err;
 
   for (const InputFile::Symbol &Sym : Syms) {
     assert(ResI != ResE);
@@ -974,7 +976,7 @@ Error LTO::runThinLTO(AddStreamFn AddStream, NativeObjectCache Cache,
           // this value. If not, no need to preserve any ThinLTO copies.
           !Res.second.IRName.empty())
         GUIDPreservedSymbols.insert(GlobalValue::getGUID(
-            GlobalValue::getRealLinkageName(Res.second.IRName)));
+            GlobalValue::dropLLVMManglingEscape(Res.second.IRName)));
     }
 
     auto DeadSymbols =
@@ -994,7 +996,7 @@ Error LTO::runThinLTO(AddStreamFn AddStream, NativeObjectCache Cache,
       if (Res.second.IRName.empty())
         continue;
       auto GUID = GlobalValue::getGUID(
-          GlobalValue::getRealLinkageName(Res.second.IRName));
+          GlobalValue::dropLLVMManglingEscape(Res.second.IRName));
       // Mark exported unless index-based analysis determined it to be dead.
       if (!DeadSymbols.count(GUID))
         ExportedGUIDs.insert(GUID);

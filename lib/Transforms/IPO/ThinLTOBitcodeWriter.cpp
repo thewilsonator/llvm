@@ -16,6 +16,7 @@
 
 #include "llvm/Analysis/BasicAliasAnalysis.h"
 #include "llvm/Analysis/ModuleSummaryAnalysis.h"
+#include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/TypeMetadataUtils.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Constants.h"
@@ -30,41 +31,10 @@
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/FunctionAttrs.h"
 #include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 using namespace llvm;
 
 namespace {
-
-// Produce a unique identifier for this module by taking the MD5 sum of the
-// names of the module's strong external symbols. This identifier is
-// normally guaranteed to be unique, or the program would fail to link due to
-// multiply defined symbols.
-//
-// If the module has no strong external symbols (such a module may still have a
-// semantic effect if it performs global initialization), we cannot produce a
-// unique identifier for this module, so we return the empty string, which
-// causes the entire module to be written as a regular LTO module.
-std::string getModuleId(Module *M) {
-  MD5 Md5;
-  bool ExportsSymbols = false;
-  for (auto &GV : M->global_values()) {
-    if (GV.isDeclaration() || GV.getName().startswith("llvm.") ||
-        !GV.hasExternalLinkage())
-      continue;
-    ExportsSymbols = true;
-    Md5.update(GV.getName());
-    Md5.update(ArrayRef<uint8_t>{0});
-  }
-
-  if (!ExportsSymbols)
-    return "";
-
-  MD5::MD5Result R;
-  Md5.final(R);
-
-  SmallString<32> Str;
-  MD5::stringifyResult(R, Str);
-  return ("$" + Str).str();
-}
 
 // Promote each local-linkage entity defined by ExportM and used by ImportM by
 // changing visibility and appending the given ModuleId.
@@ -209,7 +179,7 @@ void filterModule(
     else
       GO = new GlobalVariable(
           *M, GA->getValueType(), false, GlobalValue::ExternalLinkage,
-          (Constant *)nullptr, "", (GlobalVariable *)nullptr,
+          nullptr, "", nullptr,
           GA->getThreadLocalMode(), GA->getType()->getAddressSpace());
     GO->takeName(GA);
     GA->replaceAllUsesWith(GO);
@@ -251,7 +221,7 @@ void forEachVirtualFunction(Constant *C, function_ref<void(Function *)> Fn) {
 void splitAndWriteThinLTOBitcode(
     raw_ostream &OS, raw_ostream *ThinLinkOS,
     function_ref<AAResults &(Function &)> AARGetter, Module &M) {
-  std::string ModuleId = getModuleId(&M);
+  std::string ModuleId = getUniqueModuleId(&M);
   if (ModuleId.empty()) {
     // We couldn't generate a module ID for this module, just write it out as a
     // regular LTO module.
@@ -351,7 +321,8 @@ void splitAndWriteThinLTOBitcode(
 
 
   // FIXME: Try to re-use BSI and PFI from the original module here.
-  ModuleSummaryIndex Index = buildModuleSummaryIndex(M, nullptr, nullptr);
+  ProfileSummaryInfo PSI(M);
+  ModuleSummaryIndex Index = buildModuleSummaryIndex(M, nullptr, &PSI);
 
   SmallVector<char, 0> Buffer;
 
@@ -363,6 +334,7 @@ void splitAndWriteThinLTOBitcode(
   W.writeModule(&M, /*ShouldPreserveUseListOrder=*/false, &Index,
                 /*GenerateHash=*/true, &ModHash);
   W.writeModule(MergedM.get());
+  W.writeStrtab();
   OS << Buffer;
 
   // If a minimized bitcode module was requested for the thin link,
@@ -375,6 +347,7 @@ void splitAndWriteThinLTOBitcode(
     W2.writeModule(&M, /*ShouldPreserveUseListOrder=*/false, &Index,
                    /*GenerateHash=*/false, &ModHash);
     W2.writeModule(MergedM.get());
+    W2.writeStrtab();
     *ThinLinkOS << Buffer;
   }
 }

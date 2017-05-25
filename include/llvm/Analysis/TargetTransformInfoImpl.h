@@ -114,6 +114,12 @@ public:
     return TTI::TCC_Free;
   }
 
+  unsigned getEstimatedNumberOfCaseClusters(const SwitchInst &SI,
+                                            unsigned &JTSize) {
+    JTSize = 0;
+    return SI.getNumCases();
+  }
+
   unsigned getCallCost(FunctionType *FTy, int NumArgs) {
     assert(FTy && "FunctionType must be provided to this routine.");
 
@@ -231,6 +237,8 @@ public:
 
   bool isLegalMaskedGather(Type *DataType) { return false; }
 
+  bool prefersVectorizedAddressing() { return true; }
+
   int getScalingFactorCost(Type *Ty, GlobalValue *BaseGV, int64_t BaseOffset,
                            bool HasBaseReg, int64_t Scale, unsigned AddrSpace) {
     // Guess that all legal addressing mode are free.
@@ -304,6 +312,8 @@ public:
   unsigned getNumberOfRegisters(bool Vector) { return 8; }
 
   unsigned getRegisterBitWidth(bool Vector) { return 32; }
+
+  unsigned getMinVectorRegisterBitWidth() { return 128; }
 
   bool
   shouldConsiderAddressTypePromotion(const Instruction &I,
@@ -450,6 +460,16 @@ public:
                                 VectorType *VecTy) const {
     return VF;
   }
+
+  bool useReductionIntrinsic(unsigned Opcode, Type *Ty,
+                             TTI::ReductionFlags Flags) const {
+    return false;
+  }
+
+  bool shouldExpandReduction(const IntrinsicInst *II) const {
+    return true;
+  }
+
 protected:
   // Obtain the minimum required size to hold the value (without the sign)
   // In case of a vector it returns the min required size for one element.
