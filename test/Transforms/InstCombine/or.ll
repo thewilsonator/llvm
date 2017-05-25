@@ -3,115 +3,6 @@
 
 target datalayout = "e-p:32:32:32-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:32:64-f32:32:32-f64:32:64-v64:64:64-v128:128:128-a0:0:64-f80:128:128"
 
-define i32 @test1(i32 %A) {
-; CHECK-LABEL: @test1(
-; CHECK-NEXT:    ret i32 %A
-;
-  %B = or i32 %A, 0
-  ret i32 %B
-}
-
-define i32 @test2(i32 %A) {
-; CHECK-LABEL: @test2(
-; CHECK-NEXT:    ret i32 -1
-;
-  %B = or i32 %A, -1
-  ret i32 %B
-}
-
-define i8 @test2a(i8 %A) {
-; CHECK-LABEL: @test2a(
-; CHECK-NEXT:    ret i8 -1
-;
-  %B = or i8 %A, -1
-  ret i8 %B
-}
-
-define i1 @test3(i1 %A) {
-; CHECK-LABEL: @test3(
-; CHECK-NEXT:    ret i1 %A
-;
-  %B = or i1 %A, false
-  ret i1 %B
-}
-
-define i1 @test4(i1 %A) {
-; CHECK-LABEL: @test4(
-; CHECK-NEXT:    ret i1 true
-;
-  %B = or i1 %A, true
-  ret i1 %B
-}
-
-define i1 @test5(i1 %A) {
-; CHECK-LABEL: @test5(
-; CHECK-NEXT:    ret i1 %A
-;
-  %B = or i1 %A, %A
-  ret i1 %B
-}
-
-define i32 @test6(i32 %A) {
-; CHECK-LABEL: @test6(
-; CHECK-NEXT:    ret i32 %A
-;
-  %B = or i32 %A, %A
-  ret i32 %B
-}
-
-; A | ~A == -1
-define i32 @test7(i32 %A) {
-; CHECK-LABEL: @test7(
-; CHECK-NEXT:    ret i32 -1
-;
-  %NotA = xor i32 -1, %A
-  %B = or i32 %A, %NotA
-  ret i32 %B
-}
-
-define i8 @test8(i8 %A) {
-; CHECK-LABEL: @test8(
-; CHECK-NEXT:    ret i8 -1
-;
-  %B = or i8 %A, -2
-  %C = or i8 %B, 1
-  ret i8 %C
-}
-
-; Test that (A|c1)|(B|c2) == (A|B)|(c1|c2)
-define i8 @test9(i8 %A, i8 %B) {
-; CHECK-LABEL: @test9(
-; CHECK-NEXT:    ret i8 -1
-;
-  %C = or i8 %A, 1
-  %D = or i8 %B, -2
-  %E = or i8 %C, %D
-  ret i8 %E
-}
-
-define i8 @test10(i8 %A) {
-; CHECK-LABEL: @test10(
-; CHECK-NEXT:    ret i8 -2
-;
-  %B = or i8 %A, 1
-  %C = and i8 %B, -2
-  ; (X & C1) | C2 --> (X | C2) & (C1|C2)
-  %D = or i8 %C, -2
-  ret i8 %D
-}
-
-define i8 @test11(i8 %A) {
-; CHECK-LABEL: @test11(
-; CHECK-NEXT:    ret i8 -1
-;
-  %B = or i8 %A, -2
-  %C = xor i8 %B, 13
-  ; (X ^ C1) | C2 --> (X | C2) ^ (C1&~C2)
-  %D = or i8 %C, 1
-  %E = xor i8 %D, 12
-  ret i8 %E
-}
-
 define i32 @test12(i32 %A) {
         ; Should be eliminated
 ; CHECK-LABEL: @test12(
@@ -205,80 +96,6 @@ define <2 x i1> @test18vec(<2 x i32> %A) {
   %C = icmp slt <2 x i32> %A, <i32 50, i32 50>
   %D = or <2 x i1> %B, %C
   ret <2 x i1> %D
-}
-
-; if LHSC and RHSC differ only by one bit:
-; (A == C1 || A == C2) -> (A | (C1 ^ C2)) == C2
-; PR14708: https://bugs.llvm.org/show_bug.cgi?id=14708
-
-define i1 @cmp_eq_with_one_bit_diff_constants1(i32 %x) {
-; CHECK-LABEL: @cmp_eq_with_one_bit_diff_constants1(
-; CHECK-NEXT:    [[TMP1:%.*]] = or i32 %x, 1
-; CHECK-NEXT:    [[TMP2:%.*]] = icmp eq i32 [[TMP1]], 51
-; CHECK-NEXT:    ret i1 [[TMP2]]
-;
-  %cmp1 = icmp eq i32 %x, 50
-  %cmp2 = icmp eq i32 %x, 51
-  %or = or i1 %cmp1, %cmp2
-  ret i1 %or
-}
-
-; The constants are not necessarily off-by-one, just off-by-one-bit.
-
-define i1 @cmp_eq_with_one_bit_diff_constants2(i32 %x) {
-; CHECK-LABEL: @cmp_eq_with_one_bit_diff_constants2(
-; CHECK-NEXT:    [[TMP1:%.*]] = or i32 %x, 32
-; CHECK-NEXT:    [[TMP2:%.*]] = icmp eq i32 [[TMP1]], 97
-; CHECK-NEXT:    ret i1 [[TMP2]]
-;
-  %cmp1 = icmp eq i32 %x, 97
-  %cmp2 = icmp eq i32 %x, 65
-  %or = or i1 %cmp1, %cmp2
-  ret i1 %or
-}
-
-; Make sure the constants are treated as unsigned when comparing them.
-
-define i1 @cmp_eq_with_one_bit_diff_constants3(i8 %x) {
-; CHECK-LABEL: @cmp_eq_with_one_bit_diff_constants3(
-; CHECK-NEXT:    [[TMP1:%.*]] = or i8 %x, -128
-; CHECK-NEXT:    [[TMP2:%.*]] = icmp eq i8 [[TMP1]], -2
-; CHECK-NEXT:    ret i1 [[TMP2]]
-;
-  %cmp1 = icmp eq i8 %x, 254
-  %cmp2 = icmp eq i8 %x, 126
-  %or = or i1 %cmp1, %cmp2
-  ret i1 %or
-}
-
-; Use an 'add' to eliminate an icmp if the constants are off-by-one (not off-by-one-bit).
-; (X == 13 | X == 14) -> X-13 <u 2
-
-define i1 @cmp_eq_with_diff_one(i8 %x) {
-; CHECK-LABEL: @cmp_eq_with_diff_one(
-; CHECK-NEXT:    [[X_OFF:%.*]] = add i8 %x, -13
-; CHECK-NEXT:    [[TMP1:%.*]] = icmp ult i8 [[X_OFF]], 2
-; CHECK-NEXT:    ret i1 [[TMP1]]
-;
-  %cmp1 = icmp eq i8 %x, 13
-  %cmp2 = icmp eq i8 %x, 14
-  %or = or i1 %cmp1, %cmp2
-  ret i1 %or
-}
-
-; Make sure the constants are treated as signed when comparing them.
-; PR32524: https://bugs.llvm.org/show_bug.cgi?id=32524
-
-define i1 @cmp_eq_with_diff_one_signed(i32 %x) {
-; CHECK-LABEL: @cmp_eq_with_diff_one_signed(
-; CHECK-NEXT:    [[TMP1:%.*]] = add i32 %x, 1
-; CHECK-NEXT:    [[TMP2:%.*]] = icmp ult i32 [[TMP1]], 2
-; CHECK-NEXT:    ret i1 [[TMP2]]
-;
-  %cmp1 = icmp eq i32 %x, -1
-  %cmp2 = icmp eq i32 %x, 0
-  %or = or i1 %cmp1, %cmp2
-  ret i1 %or
 }
 
 define i32 @test20(i32 %x) {
@@ -693,59 +510,6 @@ define i32 @test42_commuted_xor(i32 %a, i32 %b) {
   ret i32 %or
 }
 
-; (A & ~B) | (A ^ B) -> A ^ B
-
-define i32 @test43(i32 %a, i32 %b) {
-; CHECK-LABEL: @test43(
-; CHECK-NEXT:    [[OR:%.*]] = xor i32 %a, %b
-; CHECK-NEXT:    ret i32 [[OR]]
-;
-  %neg = xor i32 %b, -1
-  %and = and i32 %a, %neg
-  %xor = xor i32 %a, %b
-  %or = or i32 %and, %xor
-  ret i32 %or
-}
-
-define i32 @test43_commuted_and(i32 %a, i32 %b) {
-; CHECK-LABEL: @test43_commuted_and(
-; CHECK-NEXT:    [[OR:%.*]] = xor i32 %a, %b
-; CHECK-NEXT:    ret i32 [[OR]]
-;
-  %neg = xor i32 %b, -1
-  %and = and i32 %neg, %a
-  %xor = xor i32 %a, %b
-  %or = or i32 %and, %xor
-  ret i32 %or
-}
-
-; Commute operands of the 'or'.
-; (A ^ B) | (A & ~B) -> A ^ B
-
-define i32 @test44(i32 %a, i32 %b) {
-; CHECK-LABEL: @test44(
-; CHECK-NEXT:    [[OR:%.*]] = xor i32 %a, %b
-; CHECK-NEXT:    ret i32 [[OR]]
-;
-  %xor = xor i32 %a, %b
-  %neg = xor i32 %b, -1
-  %and = and i32 %a, %neg
-  %or = or i32 %xor, %and
-  ret i32 %or
-}
-
-define i32 @test44_commuted_and(i32 %a, i32 %b) {
-; CHECK-LABEL: @test44_commuted_and(
-; CHECK-NEXT:    [[OR:%.*]] = xor i32 %a, %b
-; CHECK-NEXT:    ret i32 [[OR]]
-;
-  %xor = xor i32 %a, %b
-  %neg = xor i32 %b, -1
-  %and = and i32 %neg, %a
-  %or = or i32 %xor, %and
-  ret i32 %or
-}
-
 define i32 @test45(i32 %x, i32 %y, i32 %z) {
 ; CHECK-LABEL: @test45(
 ; CHECK-NEXT:    [[TMP1:%.*]] = and i32 %x, %z
@@ -786,17 +550,6 @@ define i1 @test47(i8 signext %c)  {
   %cmp2 = icmp ule i8 %c.off17, 26
   %or = or i1 %cmp1, %cmp2
   ret i1 %or
-}
-
-define i1 @test48(i64 %x, i1 %b) {
-; CHECK-LABEL: @test48(
-; CHECK-NEXT:    ret i1 true
-;
-  %1 = icmp ult i64 %x, 2305843009213693952
-  %2 = icmp ugt i64 %x, 2305843009213693951
-  %.b = or i1 %2, %b
-  %3 = or i1 %1, %.b
-  ret i1 %3
 }
 
 define i32 @test49(i1 %C) {

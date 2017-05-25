@@ -2881,23 +2881,23 @@ define <4 x float> @test_mask_vextractf32x4(<4 x float> %b, <16 x float> %a, i8 
 ; CHECK-LABEL: test_mask_vextractf32x4:
 ; CHECK:       ## BB#0:
 ; CHECK-NEXT:    vextractf32x4 $2, %zmm1, %xmm1
-; CHECK-NEXT:    kmovw %edi, %k1
-; CHECK-NEXT:    kshiftlw $12, %k1, %k0
-; CHECK-NEXT:    kshiftrw $15, %k0, %k0
-; CHECK-NEXT:    kshiftlw $13, %k1, %k2
-; CHECK-NEXT:    kshiftrw $15, %k2, %k2
-; CHECK-NEXT:    kshiftlw $15, %k1, %k3
-; CHECK-NEXT:    kshiftrw $15, %k3, %k3
-; CHECK-NEXT:    kshiftlw $14, %k1, %k1
+; CHECK-NEXT:    kmovw %edi, %k0
+; CHECK-NEXT:    kshiftlw $12, %k0, %k1
 ; CHECK-NEXT:    kshiftrw $15, %k1, %k1
-; CHECK-NEXT:    kmovw %k1, %eax
+; CHECK-NEXT:    kshiftlw $13, %k0, %k2
+; CHECK-NEXT:    kshiftrw $15, %k2, %k2
+; CHECK-NEXT:    kshiftlw $15, %k0, %k3
+; CHECK-NEXT:    kshiftrw $15, %k3, %k3
+; CHECK-NEXT:    kshiftlw $14, %k0, %k0
+; CHECK-NEXT:    kshiftrw $15, %k0, %k0
+; CHECK-NEXT:    kmovw %k0, %eax
 ; CHECK-NEXT:    kmovw %k3, %ecx
 ; CHECK-NEXT:    vmovd %ecx, %xmm2
-; CHECK-NEXT:    vpinsrd $1, %eax, %xmm2, %xmm2
+; CHECK-NEXT:    vpinsrb $4, %eax, %xmm2, %xmm2
 ; CHECK-NEXT:    kmovw %k2, %eax
-; CHECK-NEXT:    vpinsrd $2, %eax, %xmm2, %xmm2
-; CHECK-NEXT:    kmovw %k0, %eax
-; CHECK-NEXT:    vpinsrd $3, %eax, %xmm2, %xmm2
+; CHECK-NEXT:    vpinsrb $8, %eax, %xmm2, %xmm2
+; CHECK-NEXT:    kmovw %k1, %eax
+; CHECK-NEXT:    vpinsrb $12, %eax, %xmm2, %xmm2
 ; CHECK-NEXT:    vpslld $31, %xmm2, %xmm2
 ; CHECK-NEXT:    vblendvps %xmm2, %xmm1, %xmm0, %xmm0
 ; CHECK-NEXT:    retq
@@ -2911,23 +2911,23 @@ define <4 x i64> @test_mask_vextracti64x4(<4 x i64> %b, <8 x i64> %a, i8 %mask) 
 ; CHECK-LABEL: test_mask_vextracti64x4:
 ; CHECK:       ## BB#0:
 ; CHECK-NEXT:    vextracti64x4 $1, %zmm1, %ymm1
-; CHECK-NEXT:    kmovw %edi, %k1
-; CHECK-NEXT:    kshiftlw $12, %k1, %k0
-; CHECK-NEXT:    kshiftrw $15, %k0, %k0
-; CHECK-NEXT:    kshiftlw $13, %k1, %k2
-; CHECK-NEXT:    kshiftrw $15, %k2, %k2
-; CHECK-NEXT:    kshiftlw $15, %k1, %k3
-; CHECK-NEXT:    kshiftrw $15, %k3, %k3
-; CHECK-NEXT:    kshiftlw $14, %k1, %k1
+; CHECK-NEXT:    kmovw %edi, %k0
+; CHECK-NEXT:    kshiftlw $12, %k0, %k1
 ; CHECK-NEXT:    kshiftrw $15, %k1, %k1
-; CHECK-NEXT:    kmovw %k1, %eax
+; CHECK-NEXT:    kshiftlw $13, %k0, %k2
+; CHECK-NEXT:    kshiftrw $15, %k2, %k2
+; CHECK-NEXT:    kshiftlw $15, %k0, %k3
+; CHECK-NEXT:    kshiftrw $15, %k3, %k3
+; CHECK-NEXT:    kshiftlw $14, %k0, %k0
+; CHECK-NEXT:    kshiftrw $15, %k0, %k0
+; CHECK-NEXT:    kmovw %k0, %eax
 ; CHECK-NEXT:    kmovw %k3, %ecx
 ; CHECK-NEXT:    vmovd %ecx, %xmm2
-; CHECK-NEXT:    vpinsrd $1, %eax, %xmm2, %xmm2
+; CHECK-NEXT:    vpinsrb $4, %eax, %xmm2, %xmm2
 ; CHECK-NEXT:    kmovw %k2, %eax
-; CHECK-NEXT:    vpinsrd $2, %eax, %xmm2, %xmm2
-; CHECK-NEXT:    kmovw %k0, %eax
-; CHECK-NEXT:    vpinsrd $3, %eax, %xmm2, %xmm2
+; CHECK-NEXT:    vpinsrb $8, %eax, %xmm2, %xmm2
+; CHECK-NEXT:    kmovw %k1, %eax
+; CHECK-NEXT:    vpinsrb $12, %eax, %xmm2, %xmm2
 ; CHECK-NEXT:    vpslld $31, %xmm2, %xmm2
 ; CHECK-NEXT:    vpmovsxdq %xmm2, %ymm2
 ; CHECK-NEXT:    vblendvpd %ymm2, %ymm1, %ymm0, %ymm0
@@ -2942,23 +2942,23 @@ define <4 x i32> @test_maskz_vextracti32x4(<16 x i32> %a, i8 %mask) {
 ; CHECK-LABEL: test_maskz_vextracti32x4:
 ; CHECK:       ## BB#0:
 ; CHECK-NEXT:    vextracti32x4 $2, %zmm0, %xmm0
-; CHECK-NEXT:    kmovw %edi, %k1
-; CHECK-NEXT:    kshiftlw $12, %k1, %k0
-; CHECK-NEXT:    kshiftrw $15, %k0, %k0
-; CHECK-NEXT:    kshiftlw $13, %k1, %k2
-; CHECK-NEXT:    kshiftrw $15, %k2, %k2
-; CHECK-NEXT:    kshiftlw $15, %k1, %k3
-; CHECK-NEXT:    kshiftrw $15, %k3, %k3
-; CHECK-NEXT:    kshiftlw $14, %k1, %k1
+; CHECK-NEXT:    kmovw %edi, %k0
+; CHECK-NEXT:    kshiftlw $12, %k0, %k1
 ; CHECK-NEXT:    kshiftrw $15, %k1, %k1
-; CHECK-NEXT:    kmovw %k1, %eax
+; CHECK-NEXT:    kshiftlw $13, %k0, %k2
+; CHECK-NEXT:    kshiftrw $15, %k2, %k2
+; CHECK-NEXT:    kshiftlw $15, %k0, %k3
+; CHECK-NEXT:    kshiftrw $15, %k3, %k3
+; CHECK-NEXT:    kshiftlw $14, %k0, %k0
+; CHECK-NEXT:    kshiftrw $15, %k0, %k0
+; CHECK-NEXT:    kmovw %k0, %eax
 ; CHECK-NEXT:    kmovw %k3, %ecx
 ; CHECK-NEXT:    vmovd %ecx, %xmm1
-; CHECK-NEXT:    vpinsrd $1, %eax, %xmm1, %xmm1
+; CHECK-NEXT:    vpinsrb $4, %eax, %xmm1, %xmm1
 ; CHECK-NEXT:    kmovw %k2, %eax
-; CHECK-NEXT:    vpinsrd $2, %eax, %xmm1, %xmm1
-; CHECK-NEXT:    kmovw %k0, %eax
-; CHECK-NEXT:    vpinsrd $3, %eax, %xmm1, %xmm1
+; CHECK-NEXT:    vpinsrb $8, %eax, %xmm1, %xmm1
+; CHECK-NEXT:    kmovw %k1, %eax
+; CHECK-NEXT:    vpinsrb $12, %eax, %xmm1, %xmm1
 ; CHECK-NEXT:    vpslld $31, %xmm1, %xmm1
 ; CHECK-NEXT:    vpsrad $31, %xmm1, %xmm1
 ; CHECK-NEXT:    vpand %xmm0, %xmm1, %xmm0
@@ -3061,3 +3061,14 @@ define <8 x i64>@test_int_x86_avx512_mask_inserti64x4_512(<8 x i64> %x0, <4 x i6
   %res4 = add <8 x i64> %res2, %res3
   ret <8 x i64> %res4
 }
+
+define <8 x i64> @test_x86_avx512_movntdqa(i8* %a0) {
+; CHECK-LABEL: test_x86_avx512_movntdqa:
+; CHECK:       ## BB#0:
+; CHECK-NEXT:    vmovntdqa (%rdi), %zmm0
+; CHECK-NEXT:    retq
+  %res = call <8 x i64> @llvm.x86.avx512.movntdqa(i8* %a0)
+  ret <8 x i64> %res
+}
+
+declare <8 x i64> @llvm.x86.avx512.movntdqa(i8*) nounwind readonly

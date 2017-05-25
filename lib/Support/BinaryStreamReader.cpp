@@ -13,9 +13,18 @@
 #include "llvm/Support/BinaryStreamRef.h"
 
 using namespace llvm;
+using endianness = llvm::support::endianness;
 
-BinaryStreamReader::BinaryStreamReader(BinaryStreamRef S)
-    : Stream(S), Offset(0) {}
+BinaryStreamReader::BinaryStreamReader(BinaryStreamRef Ref) : Stream(Ref) {}
+
+BinaryStreamReader::BinaryStreamReader(BinaryStream &Stream) : Stream(Stream) {}
+
+BinaryStreamReader::BinaryStreamReader(ArrayRef<uint8_t> Data,
+                                       endianness Endian)
+    : Stream(Data, Endian) {}
+
+BinaryStreamReader::BinaryStreamReader(StringRef Data, endianness Endian)
+    : Stream(Data, Endian) {}
 
 Error BinaryStreamReader::readLongestContiguousChunk(
     ArrayRef<uint8_t> &Buffer) {
@@ -86,10 +95,28 @@ Error BinaryStreamReader::skip(uint32_t Amount) {
   return Error::success();
 }
 
+Error BinaryStreamReader::padToAlignment(uint32_t Align) {
+  uint32_t NewOffset = alignTo(Offset, Align);
+  return skip(NewOffset - Offset);
+}
+
 uint8_t BinaryStreamReader::peek() const {
   ArrayRef<uint8_t> Buffer;
   auto EC = Stream.readBytes(Offset, 1, Buffer);
   assert(!EC && "Cannot peek an empty buffer!");
   llvm::consumeError(std::move(EC));
   return Buffer[0];
+}
+
+std::pair<BinaryStreamReader, BinaryStreamReader>
+BinaryStreamReader::split(uint32_t Off) const {
+  assert(getLength() >= Off);
+
+  BinaryStreamRef First = Stream.drop_front(Offset);
+
+  BinaryStreamRef Second = First.drop_front(Off);
+  First = First.keep_front(Off);
+  BinaryStreamReader W1{First};
+  BinaryStreamReader W2{Second};
+  return std::make_pair(W1, W2);
 }

@@ -132,10 +132,9 @@ getELFKindForNamedSection(StringRef Name, SectionKind K) {
   // section(".eh_frame") gcc will produce:
   //
   //   .section   .eh_frame,"a",@progbits
-  
-  // TODO: to support Win->ELF cross compilation with coverage properly,
-  // need to pass the module pointer to the following call.
-  if (Name == getInstrProfCoverageSectionName())
+
+  if (Name == getInstrProfSectionName(IPSK_covmap, Triple::ELF,
+                                      /*AddSegmentInfo=*/false))
     return SectionKind::getMetadata();
 
   if (Name.empty() || Name[0] != '.') return K;
@@ -233,7 +232,11 @@ static const MCSymbolELF *getAssociatedSymbol(const GlobalObject *GO,
   if (!MD)
     return nullptr;
 
-  auto *VM = dyn_cast<ValueAsMetadata>(MD->getOperand(0));
+  const MDOperand &Op = MD->getOperand(0);
+  if (!Op.get())
+    return nullptr;
+
+  auto *VM = dyn_cast<ValueAsMetadata>(Op);
   if (!VM)
     report_fatal_error("MD_associated operand is not ValueAsMetadata");
 

@@ -31,6 +31,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "CodeGenDAGPatterns.h"
+#include "SubtargetFeatureInfo.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
@@ -79,7 +80,7 @@ public:
       return;
     }
     if (Ty.isVector()) {
-      OS << "LLT::vector(" << Ty.getNumElements() << ", " << Ty.getSizeInBits()
+      OS << "LLT::vector(" << Ty.getNumElements() << ", " << Ty.getScalarSizeInBits()
          << ")";
       return;
     }
@@ -90,52 +91,6 @@ public:
 };
 
 class InstructionMatcher;
-class OperandPlaceholder {
-private:
-  enum PlaceholderKind {
-    OP_MatchReference,
-    OP_Temporary,
-  } Kind;
-
-  struct MatchReferenceData {
-    InstructionMatcher *InsnMatcher;
-    StringRef InsnVarName;
-    StringRef SymbolicName;
-  };
-
-  struct TemporaryData {
-    unsigned OpIdx;
-  };
-
-  union {
-    struct MatchReferenceData MatchReference;
-    struct TemporaryData Temporary;
-  };
-
-  OperandPlaceholder(PlaceholderKind Kind) : Kind(Kind) {}
-
-public:
-  ~OperandPlaceholder() {}
-
-  static OperandPlaceholder
-  CreateMatchReference(InstructionMatcher *InsnMatcher,
-                       StringRef InsnVarName, StringRef SymbolicName) {
-    OperandPlaceholder Result(OP_MatchReference);
-    Result.MatchReference.InsnMatcher = InsnMatcher;
-    Result.MatchReference.InsnVarName = InsnVarName;
-    Result.MatchReference.SymbolicName = SymbolicName;
-    return Result;
-  }
-
-  static OperandPlaceholder CreateTemporary(unsigned OpIdx) {
-    OperandPlaceholder Result(OP_Temporary);
-    Result.Temporary.OpIdx = OpIdx;
-    return Result;
-  }
-
-  void emitCxxValueExpr(raw_ostream &OS) const;
-};
-
 /// Convert an MVT to an equivalent LLT if possible, or the invalid LLT() for
 /// MVTs that don't map cleanly to an LLT (e.g., iPTR, *any, ...).
 static Optional<LLTCodeGen> MVTToLLT(MVT::SimpleValueType SVT) {
@@ -161,20 +116,6 @@ static std::string explainPredicates(const TreePatternNode *N) {
   return Explanation;
 }
 
-static std::string explainRulePredicates(const ArrayRef<Init *> Predicates) {
-  std::string Explanation = "";
-  StringRef Separator = "";
-  for (const auto *P : Predicates) {
-    Explanation += Separator;
-
-    if (const DefInit *PDef = dyn_cast<DefInit>(P)) {
-      Explanation += PDef->getDef()->getName();
-    } else
-      Explanation += "<unknown>";
-  }
-  return Explanation;
-}
-
 std::string explainOperator(Record *Operator) {
   if (Operator->isSubClassOf("SDNode"))
     return " (" + Operator->getValueAsString("Opcode") + ")";
@@ -194,6 +135,9 @@ static Error isTrivialOperatorNode(const TreePatternNode *N) {
   std::string Explanation = "";
   std::string Separator = "";
   if (N->isLeaf()) {
+    if (isa<IntInit>(N->getLeafValue()))
+      return Error::success();
+
     Explanation = "Is a leaf";
     Separator = ", ";
   }
@@ -238,6 +182,8 @@ class RuleMatcher {
   /// ID for the next instruction variable defined with defineInsnVar()
   unsigned NextInsnVarID;
 
+  std::vector<Record *> RequiredFeatures;
+
 public:
   RuleMatcher()
       : Matchers(), Actions(), InsnVariableNames(), NextInsnVarID(0) {}
@@ -245,6 +191,7 @@ public:
   RuleMatcher &operator=(RuleMatcher &&Other) = default;
 
   InstructionMatcher &addInstructionMatcher();
+  void addRequiredFeature(Record *Feature);
 
   template <class Kind, class... Args> Kind &addAction(Args &&... args);
 
@@ -255,16 +202,19 @@ public:
   void emitCxxCapturedInsnList(raw_ostream &OS);
   void emitCxxCaptureStmts(raw_ostream &OS, StringRef Expr);
 
-  void emit(raw_ostream &OS);
+void emit(raw_ostream &OS, SubtargetFeatureInfoMap SubtargetFeatures);
 
-  /// Compare the priority of this object and B.
-  ///
-  /// Returns true if this object is more important than B.
-  bool isHigherPriorityThan(const RuleMatcher &B) const;
+/// Compare the priority of this object and B.
+///
+/// Returns true if this object is more important than B.
+bool isHigherPriorityThan(const RuleMatcher &B) const;
 
-  /// Report the maximum number of temporary operands needed by the rule
-  /// matcher.
-  unsigned countTemporaryOperands() const;
+/// Report the maximum number of temporary operands needed by the rule
+/// matcher.
+unsigned countRendererFns() const;
+
+// FIXME: Remove this as soon as possible
+InstructionMatcher &insnmatcher_front() const { return *Matchers.front(); }
 };
 
 template <class PredicateTy> class PredicateListMatcher {
@@ -325,6 +275,7 @@ public:
     OPM_ComplexPattern,
     OPM_Instruction,
     OPM_Int,
+    OPM_LiteralInt,
     OPM_LLT,
     OPM_RegBank,
     OPM_MBB,
@@ -369,7 +320,7 @@ public:
 
   /// Report the maximum number of temporary operands needed by the predicate
   /// matcher.
-  virtual unsigned countTemporaryOperands() const { return 0; }
+  virtual unsigned countRendererFns() const { return 0; }
 };
 
 /// Generates code to check that an operand is a particular LLT.
@@ -399,10 +350,6 @@ protected:
   const OperandMatcher &Operand;
   const Record &TheDef;
 
-  unsigned getNumOperands() const {
-    return TheDef.getValueAsDag("Operands")->getNumArgs();
-  }
-
   unsigned getAllocatedTemporariesBaseID() const;
 
 public:
@@ -417,17 +364,13 @@ public:
 
   void emitCxxPredicateExpr(raw_ostream &OS, RuleMatcher &Rule,
                             StringRef OperandExpr) const override {
-    OS << TheDef.getValueAsString("MatcherFn") << "(" << OperandExpr;
-    for (unsigned I = 0; I < getNumOperands(); ++I) {
-      OS << ", ";
-      OperandPlaceholder::CreateTemporary(getAllocatedTemporariesBaseID() + I)
-          .emitCxxValueExpr(OS);
-    }
-    OS << ")";
+    unsigned ID = getAllocatedTemporariesBaseID();
+    OS << "(Renderer" << ID << " = " << TheDef.getValueAsString("MatcherFn")
+       << "(" << OperandExpr << "))";
   }
 
-  unsigned countTemporaryOperands() const override {
-    return getNumOperands();
+  unsigned countRendererFns() const override {
+    return 1;
   }
 };
 
@@ -467,13 +410,14 @@ public:
   }
 };
 
-/// Generates code to check that an operand is a particular int.
-class IntOperandMatcher : public OperandPredicateMatcher {
+/// Generates code to check that an operand is a G_CONSTANT with a particular
+/// int.
+class ConstantIntOperandMatcher : public OperandPredicateMatcher {
 protected:
   int64_t Value;
 
 public:
-  IntOperandMatcher(int64_t Value)
+  ConstantIntOperandMatcher(int64_t Value)
       : OperandPredicateMatcher(OPM_Int), Value(Value) {}
 
   static bool classof(const OperandPredicateMatcher *P) {
@@ -483,6 +427,27 @@ public:
   void emitCxxPredicateExpr(raw_ostream &OS, RuleMatcher &Rule,
                             StringRef OperandExpr) const override {
     OS << "isOperandImmEqual(" << OperandExpr << ", " << Value << ", MRI)";
+  }
+};
+
+/// Generates code to check that an operand is a raw int (where MO.isImm() or
+/// MO.isCImm() is true).
+class LiteralIntOperandMatcher : public OperandPredicateMatcher {
+protected:
+  int64_t Value;
+
+public:
+  LiteralIntOperandMatcher(int64_t Value)
+      : OperandPredicateMatcher(OPM_LiteralInt), Value(Value) {}
+
+  static bool classof(const OperandPredicateMatcher *P) {
+    return P->getKind() == OPM_LiteralInt;
+  }
+
+  void emitCxxPredicateExpr(raw_ostream &OS, RuleMatcher &Rule,
+                            StringRef OperandExpr) const override {
+    OS << OperandExpr << ".isCImm() && " << OperandExpr
+       << ".getCImm()->equalsInt(" << Value << ")";
   }
 };
 
@@ -496,7 +461,7 @@ protected:
 
   /// The index of the first temporary variable allocated to this operand. The
   /// number of allocated temporaries can be found with
-  /// countTemporaryOperands().
+  /// countRendererFns().
   unsigned AllocatedTemporariesBaseID;
 
 public:
@@ -577,12 +542,12 @@ public:
 
   /// Report the maximum number of temporary operands needed by the operand
   /// matcher.
-  unsigned countTemporaryOperands() const {
+  unsigned countRendererFns() const {
     return std::accumulate(
         predicates().begin(), predicates().end(), 0,
         [](unsigned A,
            const std::unique_ptr<OperandPredicateMatcher> &Predicate) {
-          return A + Predicate->countTemporaryOperands();
+          return A + Predicate->countRendererFns();
         });
   }
 
@@ -631,7 +596,7 @@ public:
 
   /// Report the maximum number of temporary operands needed by the predicate
   /// matcher.
-  virtual unsigned countTemporaryOperands() const { return 0; }
+  virtual unsigned countRendererFns() const { return 0; }
 };
 
 /// Generates code to check the opcode of an instruction.
@@ -788,17 +753,17 @@ public:
 
   /// Report the maximum number of temporary operands needed by the instruction
   /// matcher.
-  unsigned countTemporaryOperands() const {
+  unsigned countRendererFns() const {
     return std::accumulate(predicates().begin(), predicates().end(), 0,
                            [](unsigned A,
                               const std::unique_ptr<InstructionPredicateMatcher>
                                   &Predicate) {
-                             return A + Predicate->countTemporaryOperands();
+                             return A + Predicate->countRendererFns();
                            }) +
            std::accumulate(
                Operands.begin(), Operands.end(), 0,
                [](unsigned A, const std::unique_ptr<OperandMatcher> &Operand) {
-                 return A + Operand->countTemporaryOperands();
+                 return A + Operand->countRendererFns();
                });
   }
 };
@@ -836,6 +801,8 @@ public:
   void emitCxxCaptureStmts(raw_ostream &OS, RuleMatcher &Rule,
                            StringRef OperandExpr) const override {
     OS << "if (!" << OperandExpr + ".isReg())\n"
+       << "  return false;\n"
+       << "if (TRI.isPhysicalRegister(" << OperandExpr + ".getReg()))\n"
        << "  return false;\n";
     std::string InsnVarName = Rule.defineInsnVar(
         OS, *InsnMatcher,
@@ -853,18 +820,6 @@ public:
 };
 
 //===- Actions ------------------------------------------------------------===//
-void OperandPlaceholder::emitCxxValueExpr(raw_ostream &OS) const {
-  switch (Kind) {
-  case OP_MatchReference:
-    OS << MatchReference.InsnMatcher->getOperand(MatchReference.SymbolicName)
-              .getOperandExpr(MatchReference.InsnVarName);
-    break;
-  case OP_Temporary:
-    OS << "TempOp" << Temporary.OpIdx;
-    break;
-  }
-}
-
 class OperandRenderer {
 public:
   enum RendererKind { OR_Copy, OR_Imm, OR_Register, OR_ComplexPattern };
@@ -927,7 +882,9 @@ public:
   }
 
   void emitCxxRenderStmts(raw_ostream &OS, RuleMatcher &Rule) const override {
-    OS << "    MIB.addReg(" << RegisterDef->getValueAsString("Namespace")
+    OS << "    MIB.addReg(" << (RegisterDef->getValue("Namespace")
+                                    ? RegisterDef->getValueAsString("Namespace")
+                                    : "")
        << "::" << RegisterDef->getName() << ");\n";
   }
 };
@@ -950,31 +907,33 @@ public:
   }
 };
 
+/// Adds operands by calling a renderer function supplied by the ComplexPattern
+/// matcher function.
 class RenderComplexPatternOperand : public OperandRenderer {
 private:
   const Record &TheDef;
-  std::vector<OperandPlaceholder> Sources;
+  /// The name of the operand.
+  const StringRef SymbolicName;
+  /// The renderer number. This must be unique within a rule since it's used to
+  /// identify a temporary variable to hold the renderer function.
+  unsigned RendererID;
 
   unsigned getNumOperands() const {
     return TheDef.getValueAsDag("Operands")->getNumArgs();
   }
 
 public:
-  RenderComplexPatternOperand(const Record &TheDef,
-                              const ArrayRef<OperandPlaceholder> Sources)
-      : OperandRenderer(OR_ComplexPattern), TheDef(TheDef), Sources(Sources) {}
+  RenderComplexPatternOperand(const Record &TheDef, StringRef SymbolicName,
+                              unsigned RendererID)
+      : OperandRenderer(OR_ComplexPattern), TheDef(TheDef),
+        SymbolicName(SymbolicName), RendererID(RendererID) {}
 
   static bool classof(const OperandRenderer *R) {
     return R->getKind() == OR_ComplexPattern;
   }
 
   void emitCxxRenderStmts(raw_ostream &OS, RuleMatcher &Rule) const override {
-    assert(Sources.size() == getNumOperands() && "Inconsistent number of operands");
-    for (const auto &Source : Sources) {
-      OS << "MIB.add(";
-      Source.emitCxxValueExpr(OS);
-      OS << ");\n";
-    }
+    OS << "Renderer" << RendererID << "(MIB);\n";
   }
 };
 
@@ -1020,10 +979,14 @@ private:
 
   /// True if the instruction can be built solely by mutating the opcode.
   bool canMutate() const {
+    if (OperandRenderers.size() != Matched.getNumOperands())
+      return false;
+
     for (const auto &Renderer : enumerate(OperandRenderers)) {
       if (const auto *Copy = dyn_cast<CopyRenderer>(&*Renderer.value())) {
-        if (Matched.getOperand(Copy->getSymbolicName()).getOperandIndex() !=
-            Renderer.index())
+        const OperandMatcher &OM = Matched.getOperand(Copy->getSymbolicName());
+        if (&Matched != &OM.getInstructionMatcher() ||
+            OM.getOperandIndex() != Renderer.index())
           return false;
       } else
         return false;
@@ -1054,12 +1017,16 @@ public:
            << ");\n";
 
         for (auto Def : I->ImplicitDefs) {
-          auto Namespace = Def->getValueAsString("Namespace");
+          auto Namespace = Def->getValue("Namespace")
+                               ? Def->getValueAsString("Namespace")
+                               : "";
           OS << "    MIB.addDef(" << Namespace << "::" << Def->getName()
              << ", RegState::Implicit);\n";
         }
         for (auto Use : I->ImplicitUses) {
-          auto Namespace = Use->getValueAsString("Namespace");
+          auto Namespace = Use->getValue("Namespace")
+                               ? Use->getValueAsString("Namespace")
+                               : "";
           OS << "    MIB.addUse(" << Namespace << "::" << Use->getName()
              << ", RegState::Implicit);\n";
         }
@@ -1090,6 +1057,10 @@ public:
 InstructionMatcher &RuleMatcher::addInstructionMatcher() {
   Matchers.emplace_back(new InstructionMatcher());
   return *Matchers.back();
+}
+
+void RuleMatcher::addRequiredFeature(Record *Feature) {
+  RequiredFeatures.push_back(Feature);
 }
 
 template <class Kind, class... Args>
@@ -1135,7 +1106,8 @@ void RuleMatcher::emitCxxCaptureStmts(raw_ostream &OS, StringRef Expr) {
   Matchers.front()->emitCxxCaptureStmts(OS, *this, InsnVarName);
 }
 
-void RuleMatcher::emit(raw_ostream &OS) {
+void RuleMatcher::emit(raw_ostream &OS,
+                       SubtargetFeatureInfoMap SubtargetFeatures) {
   if (Matchers.empty())
     llvm_unreachable("Unexpected empty matcher!");
 
@@ -1149,7 +1121,22 @@ void RuleMatcher::emit(raw_ostream &OS) {
   //    %elt0(s32), %elt1(s32) = TGT_LOAD_PAIR %ptr
   // on some targets but we don't need to make use of that yet.
   assert(Matchers.size() == 1 && "Cannot handle multi-root matchers yet");
-  OS << "if ([&]() {\n";
+
+  OS << "if (";
+  OS << "[&]() {\n";
+  if (!RequiredFeatures.empty()) {
+    OS << "  PredicateBitset ExpectedFeatures = {";
+    StringRef Separator = "";
+    for (const auto &Predicate : RequiredFeatures) {
+      const auto &I = SubtargetFeatures.find(Predicate);
+      assert(I != SubtargetFeatures.end() && "Didn't import predicate?");
+      OS << Separator << I->second.getEnumBitName();
+      Separator = ", ";
+    }
+    OS << "};\n";
+    OS << "if ((AvailableFeatures & ExpectedFeatures) != ExpectedFeatures)\n"
+       << "  return false;\n";
+  }
 
   emitCxxCaptureStmts(OS, "I");
 
@@ -1160,14 +1147,21 @@ void RuleMatcher::emit(raw_ostream &OS) {
 
   // We must also check if it's safe to fold the matched instructions.
   if (InsnVariableNames.size() >= 2) {
+    // Invert the map to create stable ordering (by var names)
+    SmallVector<StringRef, 2> Names;
     for (const auto &Pair : InsnVariableNames) {
       // Skip the root node since it isn't moving anywhere. Everything else is
       // sinking to meet it.
       if (Pair.first == Matchers.front().get())
         continue;
 
+      Names.push_back(Pair.second);
+    }
+    std::sort(Names.begin(), Names.end());
+
+    for (const auto &Name : Names) {
       // Reject the difficult cases until we have a more accurate check.
-      OS << "      if (!isObviouslySafeToFold(" << Pair.second
+      OS << "      if (!isObviouslySafeToFold(" << Name
          << ")) return false;\n";
 
       // FIXME: Emit checks to determine it's _actually_ safe to fold and/or
@@ -1235,11 +1229,11 @@ bool RuleMatcher::isHigherPriorityThan(const RuleMatcher &B) const {
   return false;
 }
 
-unsigned RuleMatcher::countTemporaryOperands() const {
+unsigned RuleMatcher::countRendererFns() const {
   return std::accumulate(
       Matchers.begin(), Matchers.end(), 0,
       [](unsigned A, const std::unique_ptr<InstructionMatcher> &Matcher) {
-        return A + Matcher->countTemporaryOperands();
+        return A + Matcher->countRendererFns();
       });
 }
 
@@ -1264,15 +1258,18 @@ private:
   /// GIComplexPatternEquiv.
   DenseMap<const Record *, const Record *> ComplexPatternEquivs;
 
+  // Map of predicates to their subtarget features.
+  SubtargetFeatureInfoMap SubtargetFeatures;
+
   void gatherNodeEquivs();
   const CodeGenInstruction *findNodeEquiv(Record *N) const;
 
-  Error importRulePredicates(RuleMatcher &M, ArrayRef<Init *> Predicates) const;
+  Error importRulePredicates(RuleMatcher &M, ArrayRef<Init *> Predicates);
   Expected<InstructionMatcher &>
   createAndImportSelDAGMatcher(InstructionMatcher &InsnMatcher,
                                const TreePatternNode *Src) const;
   Error importChildMatcher(InstructionMatcher &InsnMatcher,
-                           TreePatternNode *SrcChild, unsigned OpIdx,
+                           const TreePatternNode *SrcChild, unsigned OpIdx,
                            unsigned &TempOpIdx) const;
   Expected<BuildMIAction &> createAndImportInstructionRenderer(
       RuleMatcher &M, const TreePatternNode *Dst,
@@ -1280,6 +1277,8 @@ private:
   Error importExplicitUseRenderer(BuildMIAction &DstMIBuilder,
                                   TreePatternNode *DstChild,
                                   const InstructionMatcher &InsnMatcher) const;
+  Error importDefaultOperandRenderers(BuildMIAction &DstMIBuilder,
+                                      DagInit *DefaultOps) const;
   Error
   importImplicitDefRenderers(BuildMIAction &DstMIBuilder,
                              const std::vector<Record *> &ImplicitDefs) const;
@@ -1287,6 +1286,8 @@ private:
   /// Analyze pattern \p P, returning a matcher for it if possible.
   /// Otherwise, return an Error explaining why we don't support it.
   Expected<RuleMatcher> runOnPattern(const PatternToMatch &P);
+
+  void declareSubtargetFeature(Record *Predicate);
 };
 
 void GlobalISelEmitter::gatherNodeEquivs() {
@@ -1315,10 +1316,13 @@ GlobalISelEmitter::GlobalISelEmitter(RecordKeeper &RK)
 
 Error
 GlobalISelEmitter::importRulePredicates(RuleMatcher &M,
-                                        ArrayRef<Init *> Predicates) const {
-  if (!Predicates.empty())
-    return failedImport("Pattern has a rule predicate (" +
-                        explainRulePredicates(Predicates) + ")");
+                                        ArrayRef<Init *> Predicates) {
+  for (const Init *Predicate : Predicates) {
+    const DefInit *PredicateDef = static_cast<const DefInit *>(Predicate);
+    declareSubtargetFeature(PredicateDef->getDef());
+    M.addRequiredFeature(PredicateDef->getDef());
+  }
+
   return Error::success();
 }
 
@@ -1328,14 +1332,23 @@ Expected<InstructionMatcher &> GlobalISelEmitter::createAndImportSelDAGMatcher(
   if (Src->getExtTypes().size() > 1)
     return failedImport("Src pattern has multiple results");
 
-  auto SrcGIOrNull = findNodeEquiv(Src->getOperator());
-  if (!SrcGIOrNull)
-    return failedImport("Pattern operator lacks an equivalent Instruction" +
-                        explainOperator(Src->getOperator()));
-  auto &SrcGI = *SrcGIOrNull;
+  if (Src->isLeaf()) {
+    Init *SrcInit = Src->getLeafValue();
+    if (isa<IntInit>(SrcInit)) {
+      InsnMatcher.addPredicate<InstructionOpcodeMatcher>(
+          &Target.getInstruction(RK.getDef("G_CONSTANT")));
+    } else
+      return failedImport("Unable to deduce gMIR opcode to handle Src (which is a leaf)");
+  } else {
+    auto SrcGIOrNull = findNodeEquiv(Src->getOperator());
+    if (!SrcGIOrNull)
+      return failedImport("Pattern operator lacks an equivalent Instruction" +
+                          explainOperator(Src->getOperator()));
+    auto &SrcGI = *SrcGIOrNull;
 
-  // The operators look good: match the opcode and mutate it to the new one.
-  InsnMatcher.addPredicate<InstructionOpcodeMatcher>(&SrcGI);
+    // The operators look good: match the opcode
+    InsnMatcher.addPredicate<InstructionOpcodeMatcher>(&SrcGI);
+  }
 
   unsigned OpIdx = 0;
   unsigned TempOpIdx = 0;
@@ -1352,18 +1365,27 @@ Expected<InstructionMatcher &> GlobalISelEmitter::createAndImportSelDAGMatcher(
     OM.addPredicate<LLTOperandMatcher>(*OpTyOrNone);
   }
 
-  // Match the used operands (i.e. the children of the operator).
-  for (unsigned i = 0, e = Src->getNumChildren(); i != e; ++i) {
-    if (auto Error = importChildMatcher(InsnMatcher, Src->getChild(i), OpIdx++,
-                                        TempOpIdx))
-      return std::move(Error);
+  if (Src->isLeaf()) {
+    Init *SrcInit = Src->getLeafValue();
+    if (IntInit *SrcIntInit = dyn_cast<IntInit>(SrcInit)) {
+      OperandMatcher &OM = InsnMatcher.addOperand(OpIdx++, "", TempOpIdx);
+      OM.addPredicate<LiteralIntOperandMatcher>(SrcIntInit->getValue());
+    } else
+      return failedImport("Unable to deduce gMIR opcode to handle Src (which is a leaf)");
+  } else {
+    // Match the used operands (i.e. the children of the operator).
+    for (unsigned i = 0, e = Src->getNumChildren(); i != e; ++i) {
+      if (auto Error = importChildMatcher(InsnMatcher, Src->getChild(i),
+                                          OpIdx++, TempOpIdx))
+        return std::move(Error);
+    }
   }
 
   return InsnMatcher;
 }
 
 Error GlobalISelEmitter::importChildMatcher(InstructionMatcher &InsnMatcher,
-                                            TreePatternNode *SrcChild,
+                                            const TreePatternNode *SrcChild,
                                             unsigned OpIdx,
                                             unsigned &TempOpIdx) const {
   OperandMatcher &OM =
@@ -1408,7 +1430,7 @@ Error GlobalISelEmitter::importChildMatcher(InstructionMatcher &InsnMatcher,
 
   // Check for constant immediates.
   if (auto *ChildInt = dyn_cast<IntInit>(SrcChild->getLeafValue())) {
-    OM.addPredicate<IntOperandMatcher>(ChildInt->getValue());
+    OM.addPredicate<ConstantIntOperandMatcher>(ChildInt->getValue());
     return Error::success();
   }
 
@@ -1423,6 +1445,12 @@ Error GlobalISelEmitter::importChildMatcher(InstructionMatcher &InsnMatcher,
       return Error::success();
     }
 
+    if (ChildRec->isSubClassOf("RegisterOperand")) {
+      OM.addPredicate<RegisterBankOperandMatcher>(
+          Target.getRegisterClass(ChildRec->getValueAsDef("RegClass")));
+      return Error::success();
+    }
+
     // Check for ComplexPattern's.
     if (ChildRec->isSubClassOf("ComplexPattern")) {
       const auto &ComplexPattern = ComplexPatternEquivs.find(ChildRec);
@@ -1430,9 +1458,9 @@ Error GlobalISelEmitter::importChildMatcher(InstructionMatcher &InsnMatcher,
         return failedImport("SelectionDAG ComplexPattern (" +
                             ChildRec->getName() + ") not mapped to GlobalISel");
 
-      const auto &Predicate = OM.addPredicate<ComplexPatternOperandMatcher>(
-          OM, *ComplexPattern->second);
-      TempOpIdx += Predicate.countTemporaryOperands();
+      OM.addPredicate<ComplexPatternOperandMatcher>(OM,
+                                                    *ComplexPattern->second);
+      TempOpIdx++;
       return Error::success();
     }
 
@@ -1486,7 +1514,8 @@ Error GlobalISelEmitter::importExplicitUseRenderer(
       return Error::success();
     }
 
-    if (ChildRec->isSubClassOf("RegisterClass")) {
+    if (ChildRec->isSubClassOf("RegisterClass") ||
+        ChildRec->isSubClassOf("RegisterOperand")) {
       DstMIBuilder.addRenderer<CopyRenderer>(InsnMatcher, DstChild->getName());
       return Error::success();
     }
@@ -1497,13 +1526,10 @@ Error GlobalISelEmitter::importExplicitUseRenderer(
         return failedImport(
             "SelectionDAG ComplexPattern not mapped to GlobalISel");
 
-      SmallVector<OperandPlaceholder, 2> RenderedOperands;
       const OperandMatcher &OM = InsnMatcher.getOperand(DstChild->getName());
-      for (unsigned I = 0; I < OM.countTemporaryOperands(); ++I)
-        RenderedOperands.push_back(OperandPlaceholder::CreateTemporary(
-            OM.getAllocatedTemporariesBaseID() + I));
       DstMIBuilder.addRenderer<RenderComplexPatternOperand>(
-          *ComplexPattern->second, RenderedOperands);
+          *ComplexPattern->second, DstChild->getName(),
+          OM.getAllocatedTemporariesBaseID());
       return Error::success();
     }
 
@@ -1538,59 +1564,23 @@ Expected<BuildMIAction &> GlobalISelEmitter::createAndImportInstructionRenderer(
     DstMIBuilder.addRenderer<CopyRenderer>(InsnMatcher, DstIOperand.Name);
   }
 
-  // Figure out which operands need defaults inserted. Operands that subclass
-  // OperandWithDefaultOps are considered from left to right until we have
-  // enough operands to render the instruction.
-  SmallSet<unsigned, 2> DefaultOperands;
-  unsigned DstINumUses = DstI.Operands.size() - DstI.Operands.NumDefs;
-  unsigned NumDefaultOperands = 0;
-  for (unsigned I = 0; I < DstINumUses &&
-                       DstINumUses > Dst->getNumChildren() + NumDefaultOperands;
-       ++I) {
-    const auto &DstIOperand = DstI.Operands[DstI.Operands.NumDefs + I];
-    if (DstIOperand.Rec->isSubClassOf("OperandWithDefaultOps")) {
-      DefaultOperands.insert(I);
-      NumDefaultOperands +=
-          DstIOperand.Rec->getValueAsDag("DefaultOps")->getNumArgs();
-    }
-  }
-  if (DstINumUses > Dst->getNumChildren() + DefaultOperands.size())
-    return failedImport("Insufficient operands supplied and default ops "
-                        "couldn't make up the shortfall");
-  if (DstINumUses < Dst->getNumChildren() + DefaultOperands.size())
-    return failedImport("Too many operands supplied");
-
   // Render the explicit uses.
   unsigned Child = 0;
+  unsigned DstINumUses = DstI.Operands.size() - DstI.Operands.NumDefs;
+  unsigned NumDefaultOps = 0;
   for (unsigned I = 0; I != DstINumUses; ++I) {
-    // If we need to insert default ops here, then do so.
-    if (DefaultOperands.count(I)) {
-      const auto &DstIOperand = DstI.Operands[DstI.Operands.NumDefs + I];
+    const auto &DstIOperand = DstI.Operands[DstI.Operands.NumDefs + I];
 
+    // If the operand has default values, introduce them now.
+    // FIXME: Until we have a decent test case that dictates we should do
+    // otherwise, we're going to assume that operands with default values cannot
+    // be specified in the patterns. Therefore, adding them will not cause us to
+    // end up with too many rendered operands.
+    if (DstIOperand.Rec->isSubClassOf("OperandWithDefaultOps")) {
       DagInit *DefaultOps = DstIOperand.Rec->getValueAsDag("DefaultOps");
-      for (const auto *DefaultOp : DefaultOps->args()) {
-        // Look through ValueType operators.
-        if (const DagInit *DefaultDagOp = dyn_cast<DagInit>(DefaultOp)) {
-          if (const DefInit *DefaultDagOperator =
-                  dyn_cast<DefInit>(DefaultDagOp->getOperator())) {
-            if (DefaultDagOperator->getDef()->isSubClassOf("ValueType"))
-              DefaultOp = DefaultDagOp->getArg(0);
-          }
-        }
-
-        if (const DefInit *DefaultDefOp = dyn_cast<DefInit>(DefaultOp)) {
-          DstMIBuilder.addRenderer<AddRegisterRenderer>(DefaultDefOp->getDef());
-          continue;
-        }
-
-        if (const IntInit *DefaultIntOp = dyn_cast<IntInit>(DefaultOp)) {
-          DstMIBuilder.addRenderer<ImmRenderer>(DefaultIntOp->getValue());
-          continue;
-        }
-
-        return failedImport("Could not add default op");
-      }
-
+      if (auto Error = importDefaultOperandRenderers(DstMIBuilder, DefaultOps))
+        return std::move(Error);
+      ++NumDefaultOps;
       continue;
     }
 
@@ -1600,7 +1590,42 @@ Expected<BuildMIAction &> GlobalISelEmitter::createAndImportInstructionRenderer(
     ++Child;
   }
 
+  if (NumDefaultOps + Dst->getNumChildren() != DstINumUses)
+    return failedImport("Expected " + llvm::to_string(DstINumUses) +
+                        " used operands but found " +
+                        llvm::to_string(Dst->getNumChildren()) +
+                        " explicit ones and " + llvm::to_string(NumDefaultOps) +
+                        " default ones");
+
   return DstMIBuilder;
+}
+
+Error GlobalISelEmitter::importDefaultOperandRenderers(
+    BuildMIAction &DstMIBuilder, DagInit *DefaultOps) const {
+  for (const auto *DefaultOp : DefaultOps->args()) {
+    // Look through ValueType operators.
+    if (const DagInit *DefaultDagOp = dyn_cast<DagInit>(DefaultOp)) {
+      if (const DefInit *DefaultDagOperator =
+              dyn_cast<DefInit>(DefaultDagOp->getOperator())) {
+        if (DefaultDagOperator->getDef()->isSubClassOf("ValueType"))
+          DefaultOp = DefaultDagOp->getArg(0);
+      }
+    }
+
+    if (const DefInit *DefaultDefOp = dyn_cast<DefInit>(DefaultOp)) {
+      DstMIBuilder.addRenderer<AddRegisterRenderer>(DefaultDefOp->getDef());
+      continue;
+    }
+
+    if (const IntInit *DefaultIntOp = dyn_cast<IntInit>(DefaultOp)) {
+      DstMIBuilder.addRenderer<ImmRenderer>(DefaultIntOp->getValue());
+      continue;
+    }
+
+    return failedImport("Could not add default op");
+  }
+
+  return Error::success();
 }
 
 Error GlobalISelEmitter::importImplicitDefRenderers(
@@ -1631,6 +1656,9 @@ Expected<RuleMatcher> GlobalISelEmitter::runOnPattern(const PatternToMatch &P) {
     return failedImport("Src pattern root isn't a trivial operator (" +
                         toString(std::move(Err)) + ")");
 
+  if (Dst->isLeaf())
+    return failedImport("Dst pattern root isn't a known leaf");
+
   // Start with the defined operands (i.e., the results of the root operator).
   Record *DstOp = Dst->getOperator();
   if (!DstOp->isSubClassOf("Instruction"))
@@ -1656,6 +1684,8 @@ Expected<RuleMatcher> GlobalISelEmitter::runOnPattern(const PatternToMatch &P) {
 
     const auto &DstIOperand = DstI.Operands[OpIdx];
     Record *DstIOpRec = DstIOperand.Rec;
+    if (DstIOpRec->isSubClassOf("RegisterOperand"))
+      DstIOpRec = DstIOpRec->getValueAsDef("RegClass");
     if (!DstIOpRec->isSubClassOf("RegisterClass"))
       return failedImport("Dst MI def isn't a register class");
 
@@ -1723,32 +1753,93 @@ void GlobalISelEmitter::run(raw_ostream &OS) {
 
   unsigned MaxTemporaries = 0;
   for (const auto &Rule : Rules)
-    MaxTemporaries = std::max(MaxTemporaries, Rule.countTemporaryOperands());
+    MaxTemporaries = std::max(MaxTemporaries, Rule.countRendererFns());
+
+  OS << "#ifdef GET_GLOBALISEL_PREDICATE_BITSET\n"
+     << "const unsigned MAX_SUBTARGET_PREDICATES = " << SubtargetFeatures.size()
+     << ";\n"
+     << "using PredicateBitset = "
+        "llvm::PredicateBitsetImpl<MAX_SUBTARGET_PREDICATES>;\n"
+     << "#endif // ifdef GET_GLOBALISEL_PREDICATE_BITSET\n\n";
 
   OS << "#ifdef GET_GLOBALISEL_TEMPORARIES_DECL\n";
   for (unsigned I = 0; I < MaxTemporaries; ++I)
-    OS << "  mutable MachineOperand TempOp" << I << ";\n";
+    OS << "  mutable ComplexRendererFn Renderer" << I << ";\n";
   OS << "#endif // ifdef GET_GLOBALISEL_TEMPORARIES_DECL\n\n";
 
   OS << "#ifdef GET_GLOBALISEL_TEMPORARIES_INIT\n";
   for (unsigned I = 0; I < MaxTemporaries; ++I)
-    OS << ", TempOp" << I << "(MachineOperand::CreatePlaceholder())\n";
+    OS << ", Renderer" << I << "(nullptr)\n";
   OS << "#endif // ifdef GET_GLOBALISEL_TEMPORARIES_INIT\n\n";
 
-  OS << "#ifdef GET_GLOBALISEL_IMPL\n"
-     << "bool " << Target.getName()
+  OS << "#ifdef GET_GLOBALISEL_IMPL\n";
+  SubtargetFeatureInfo::emitSubtargetFeatureBitEnumeration(SubtargetFeatures,
+                                                           OS);
+
+  // Separate subtarget features by how often they must be recomputed.
+  SubtargetFeatureInfoMap ModuleFeatures;
+  std::copy_if(SubtargetFeatures.begin(), SubtargetFeatures.end(),
+               std::inserter(ModuleFeatures, ModuleFeatures.end()),
+               [](const SubtargetFeatureInfoMap::value_type &X) {
+                 return !X.second.mustRecomputePerFunction();
+               });
+  SubtargetFeatureInfoMap FunctionFeatures;
+  std::copy_if(SubtargetFeatures.begin(), SubtargetFeatures.end(),
+               std::inserter(FunctionFeatures, FunctionFeatures.end()),
+               [](const SubtargetFeatureInfoMap::value_type &X) {
+                 return X.second.mustRecomputePerFunction();
+               });
+
+  SubtargetFeatureInfo::emitComputeAvailableFeatures(
+      Target.getName(), "InstructionSelector", "computeAvailableModuleFeatures",
+      ModuleFeatures, OS);
+  SubtargetFeatureInfo::emitComputeAvailableFeatures(
+      Target.getName(), "InstructionSelector",
+      "computeAvailableFunctionFeatures", FunctionFeatures, OS,
+      "const MachineFunction *MF");
+
+  OS << "bool " << Target.getName()
      << "InstructionSelector::selectImpl(MachineInstr &I) const {\n"
      << "  MachineFunction &MF = *I.getParent()->getParent();\n"
-     << "  const MachineRegisterInfo &MRI = MF.getRegInfo();\n";
+     << "  const MachineRegisterInfo &MRI = MF.getRegInfo();\n"
+     << "  // FIXME: This should be computed on a per-function basis rather than per-insn.\n"
+     << "  AvailableFunctionFeatures = computeAvailableFunctionFeatures(&STI, &MF);\n"
+     << "  const PredicateBitset AvailableFeatures = getAvailableFeatures();\n";
 
   for (auto &Rule : Rules) {
-    Rule.emit(OS);
+    Rule.emit(OS, SubtargetFeatures);
     ++NumPatternEmitted;
   }
 
   OS << "  return false;\n"
      << "}\n"
      << "#endif // ifdef GET_GLOBALISEL_IMPL\n";
+
+  OS << "#ifdef GET_GLOBALISEL_PREDICATES_DECL\n"
+     << "PredicateBitset AvailableModuleFeatures;\n"
+     << "mutable PredicateBitset AvailableFunctionFeatures;\n"
+     << "PredicateBitset getAvailableFeatures() const {\n"
+     << "  return AvailableModuleFeatures | AvailableFunctionFeatures;\n"
+     << "}\n"
+     << "PredicateBitset\n"
+     << "computeAvailableModuleFeatures(const " << Target.getName()
+     << "Subtarget *Subtarget) const;\n"
+     << "PredicateBitset\n"
+     << "computeAvailableFunctionFeatures(const " << Target.getName()
+     << "Subtarget *Subtarget,\n"
+     << "                                 const MachineFunction *MF) const;\n"
+     << "#endif // ifdef GET_GLOBALISEL_PREDICATES_DECL\n";
+
+  OS << "#ifdef GET_GLOBALISEL_PREDICATES_INIT\n"
+     << "AvailableModuleFeatures(computeAvailableModuleFeatures(&STI)),\n"
+     << "AvailableFunctionFeatures()\n"
+     << "#endif // ifdef GET_GLOBALISEL_PREDICATES_INIT\n";
+}
+
+void GlobalISelEmitter::declareSubtargetFeature(Record *Predicate) {
+  if (SubtargetFeatures.count(Predicate) == 0)
+    SubtargetFeatures.emplace(
+        Predicate, SubtargetFeatureInfo(Predicate, SubtargetFeatures.size()));
 }
 
 } // end anonymous namespace
