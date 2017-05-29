@@ -1005,6 +1005,9 @@ AttributeList AttributeList::get(LLVMContext &C,
   unsigned MaxSize = 0;
   for (AttributeList List : Attrs)
     MaxSize = std::max(MaxSize, List.getNumAttrSets());
+    
+  if (MaxSize == 0)
+    return AttributeList();
 
   SmallVector<AttributeSet, 8> NewAttrSets(MaxSize);
   for (unsigned I = 0; I < MaxSize; ++I) {
