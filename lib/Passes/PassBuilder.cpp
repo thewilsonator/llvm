@@ -341,10 +341,7 @@ PassBuilder::buildFunctionSimplificationPipeline(OptimizationLevel Level,
   // Rotate Loop - disable header duplication at -Oz
   LPM1.addPass(LoopRotatePass(Level != Oz));
   LPM1.addPass(LICMPass());
-#if 0
-  // The LoopUnswitch pass isn't yet ported to the new pass manager.
-  LPM1.addPass(LoopUnswitchPass(/* OptimizeForSize */ Level != O3));
-#endif
+  LPM1.addPass(SimpleLoopUnswitchPass());
   LPM2.addPass(IndVarSimplifyPass());
   LPM2.addPass(LoopIdiomRecognizePass());
   LPM2.addPass(LoopDeletionPass());
@@ -436,6 +433,11 @@ static void addPGOInstrPasses(ModulePassManager &MPM, bool DebugLogging,
 
     MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(std::move(CGPipeline)));
   }
+
+  // Delete anything that is now dead to make sure that we don't instrument
+  // dead code. Instrumentation can end up keeping dead code around and
+  // dramatically increase code size.
+  MPM.addPass(GlobalDCEPass());
 
   if (RunProfileGen) {
     MPM.addPass(PGOInstrumentationGen());

@@ -378,6 +378,9 @@ cl::opt<std::string> InputFilename(cl::Positional,
 }
 
 namespace pdb2yaml {
+cl::opt<bool> All("all",
+                  cl::desc("Dump everything we know how to dump."),
+                  cl::sub(PdbToYamlSubcommand), cl::init(false));
 cl::opt<bool>
     NoFileHeaders("no-file-headers",
                   cl::desc("Do not dump MSF file headers (you will not be able "
@@ -525,12 +528,12 @@ static void yamlToPdb(StringRef Path) {
   DbiBuilder.setVersionHeader(Dbi.VerHeader);
   for (const auto &MI : Dbi.ModInfos) {
     auto &ModiBuilder = ExitOnErr(DbiBuilder.addModuleInfo(MI.Mod));
+    ModiBuilder.setObjFileName(MI.Obj);
 
     for (auto S : MI.SourceFiles)
       ExitOnErr(DbiBuilder.addModuleSourceFile(MI.Mod, S));
     if (MI.Modi.hasValue()) {
       const auto &ModiStream = *MI.Modi;
-      ModiBuilder.setObjFileName(MI.Obj);
       for (auto Symbol : ModiStream.Symbols)
         ModiBuilder.addSymbol(Symbol.Record);
     }
