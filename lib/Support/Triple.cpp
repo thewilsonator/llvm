@@ -649,12 +649,10 @@ static Triple::ObjectFormatType getDefaultFormat(const Triple &T) {
   case Triple::tce:
   case Triple::tcele:
   case Triple::thumbeb:
-  case Triple::xcore:
-    return Triple::ELF;
-
   case Triple::wasm32:
   case Triple::wasm64:
-    return Triple::Wasm;
+  case Triple::xcore:
+    return Triple::ELF;
 
   case Triple::ppc:
   case Triple::ppc64:
@@ -878,6 +876,10 @@ std::string Triple::normalize(StringRef Str) {
       Components[3] = NormalizedEnvironment;
     }
   }
+
+  // SUSE uses "gnueabi" to mean "gnueabihf"
+  if (Vendor == Triple::SUSE && Environment == llvm::Triple::GNUEABI)
+    Components[3] = "gnueabihf";
 
   if (OS == Triple::Win32) {
     Components.resize(4);
