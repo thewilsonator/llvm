@@ -12,16 +12,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/Scalar/JumpThreading.h"
-#include "llvm/Transforms/Scalar.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/GlobalsModRef.h"
-#include "llvm/Analysis/CFG.h"
 #include "llvm/Analysis/BlockFrequencyInfoImpl.h"
+#include "llvm/Analysis/CFG.h"
 #include "llvm/Analysis/ConstantFolding.h"
+#include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/Loads.h"
 #include "llvm/Analysis/LoopInfo.h"
@@ -36,6 +35,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/Local.h"
@@ -132,7 +132,7 @@ bool JumpThreading::runOnFunction(Function &F) {
   bool HasProfileData = F.getEntryCount().hasValue();
   if (HasProfileData) {
     LoopInfo LI{DominatorTree(F)};
-    BPI.reset(new BranchProbabilityInfo(F, LI));
+    BPI.reset(new BranchProbabilityInfo(F, LI, TLI));
     BFI.reset(new BlockFrequencyInfo(F, *BPI, LI));
   }
 
@@ -152,7 +152,7 @@ PreservedAnalyses JumpThreadingPass::run(Function &F,
   bool HasProfileData = F.getEntryCount().hasValue();
   if (HasProfileData) {
     LoopInfo LI{DominatorTree(F)};
-    BPI.reset(new BranchProbabilityInfo(F, LI));
+    BPI.reset(new BranchProbabilityInfo(F, LI, &TLI));
     BFI.reset(new BlockFrequencyInfo(F, *BPI, LI));
   }
 
@@ -752,6 +752,37 @@ bool JumpThreadingPass::ProcessBlock(BasicBlock *BB) {
       LVI->eraseBlock(SinglePred);
       MergeBasicBlockIntoOnlyPred(BB);
 
+      // Now that BB is merged into SinglePred (i.e. SinglePred Code followed by
+      // BB code within one basic block `BB`), we need to invalidate the LVI
+      // information associated with BB, because the LVI information need not be
+      // true for all of BB after the merge. For example,
+      // Before the merge, LVI info and code is as follows:
+      // SinglePred: <LVI info1 for %p val>
+      // %y = use of %p
+      // call @exit() // need not transfer execution to successor.
+      // assume(%p) // from this point on %p is true
+      // br label %BB
+      // BB: <LVI info2 for %p val, i.e. %p is true>
+      // %x = use of %p
+      // br label exit
+      //
+      // Note that this LVI info for blocks BB and SinglPred is correct for %p
+      // (info2 and info1 respectively). After the merge and the deletion of the
+      // LVI info1 for SinglePred. We have the following code:
+      // BB: <LVI info2 for %p val>
+      // %y = use of %p
+      // call @exit()
+      // assume(%p)
+      // %x = use of %p <-- LVI info2 is correct from here onwards.
+      // br label exit
+      // LVI info2 for BB is incorrect at the beginning of BB.
+
+      // Invalidate LVI information for BB if the LVI is not provably true for
+      // all of BB.
+      if (any_of(*BB, [](Instruction &I) {
+            return !isGuaranteedToTransferExecutionToSuccessor(&I);
+          }))
+        LVI->eraseBlock(BB);
       return true;
     }
   }

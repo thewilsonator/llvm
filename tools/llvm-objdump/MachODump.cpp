@@ -11,12 +11,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Object/MachO.h"
 #include "llvm-objdump.h"
 #include "llvm-c/Disassembler.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/BinaryFormat/MachO.h"
 #include "llvm/Config/config.h"
 #include "llvm/DebugInfo/DIContext.h"
 #include "llvm/DebugInfo/DWARF/DWARFContext.h"
@@ -30,6 +30,7 @@
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/Object/MachO.h"
 #include "llvm/Object/MachOUniversal.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
@@ -39,7 +40,6 @@
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/GraphWriter.h"
 #include "llvm/Support/LEB128.h"
-#include "llvm/Support/MachO.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
@@ -2594,7 +2594,8 @@ static const char *get_symbol_32(uint32_t sect_offset, SectionRef S,
 
 // These are structs in the Objective-C meta data and read to produce the
 // comments for disassembly.  While these are part of the ABI they are no
-// public defintions.  So the are here not in include/llvm/Support/MachO.h .
+// public defintions.  So the are here not in include/llvm/BinaryFormat/MachO.h
+// .
 
 // The cfstring object in a 64-bit Mach-O file.
 struct cfstring64_t {
@@ -7633,6 +7634,10 @@ static void PrintMachHeader(uint32_t magic, uint32_t cputype,
       outs() << " APP_EXTENSION_SAFE";
       f &= ~MachO::MH_APP_EXTENSION_SAFE;
     }
+    if (f & MachO::MH_NLIST_OUTOFSYNC_WITH_DYLDINFO) {
+      outs() << " NLIST_OUTOFSYNC_WITH_DYLDINFO";
+      f &= ~MachO::MH_NLIST_OUTOFSYNC_WITH_DYLDINFO;
+    }
     if (f != 0 || flags == 0)
       outs() << format(" 0x%08" PRIx32, f);
   } else {
@@ -9335,6 +9340,22 @@ void llvm::printMachOLoadCommands(const object::ObjectFile *Obj) {
 //===----------------------------------------------------------------------===//
 
 void llvm::printMachOExportsTrie(const object::MachOObjectFile *Obj) {
+  uint64_t BaseSegmentAddress = 0;
+  for (const auto &Command : Obj->load_commands()) {
+    if (Command.C.cmd == MachO::LC_SEGMENT) {
+      MachO::segment_command Seg = Obj->getSegmentLoadCommand(Command);
+      if (Seg.fileoff == 0 && Seg.filesize != 0) {
+        BaseSegmentAddress = Seg.vmaddr;
+        break;
+      }
+    } else if (Command.C.cmd == MachO::LC_SEGMENT_64) {
+      MachO::segment_command_64 Seg = Obj->getSegment64LoadCommand(Command);
+      if (Seg.fileoff == 0 && Seg.filesize != 0) {
+        BaseSegmentAddress = Seg.vmaddr;
+        break;
+      }
+    }
+  }
   for (const llvm::object::ExportEntry &Entry : Obj->exports()) {
     uint64_t Flags = Entry.flags();
     bool ReExport = (Flags & MachO::EXPORT_SYMBOL_FLAGS_REEXPORT);
@@ -9348,7 +9369,7 @@ void llvm::printMachOExportsTrie(const object::MachOObjectFile *Obj) {
       outs() << "[re-export] ";
     else
       outs() << format("0x%08llX  ",
-                       Entry.address()); // FIXME:add in base address
+                       Entry.address() + BaseSegmentAddress);
     outs() << Entry.name();
     if (WeakDef || ThreadLocal || Resolver || Abs) {
       bool NeedsComma = false;

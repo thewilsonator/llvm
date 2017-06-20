@@ -11,9 +11,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "AArch64ISelLowering.h"
 #include "AArch64CallingConvention.h"
 #include "AArch64MachineFunctionInfo.h"
-#include "AArch64ISelLowering.h"
 #include "AArch64PerfectShuffle.h"
 #include "AArch64RegisterInfo.h"
 #include "AArch64Subtarget.h"
@@ -22,9 +22,9 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Triple.h"
@@ -51,10 +51,10 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/GlobalValue.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
-#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/OperandTraits.h"
 #include "llvm/IR/Type.h"
@@ -9366,7 +9366,7 @@ static SDValue splitStores(SDNode *N, TargetLowering::DAGCombinerInfo &DCI,
     return SDValue();
 
   StoreSDNode *S = cast<StoreSDNode>(N);
-  if (S->isVolatile())
+  if (S->isVolatile() || S->isIndexed())
     return SDValue();
 
   SDValue StVal = S->getValue();
