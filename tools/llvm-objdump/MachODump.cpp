@@ -1135,7 +1135,8 @@ static void DumpInfoPlistSectionContents(StringRef Filename,
     DataRefImpl Ref = Section.getRawDataRefImpl();
     StringRef SegName = O->getSectionFinalSegmentName(Ref);
     if (SegName == "__TEXT" && SectName == "__info_plist") {
-      outs() << "Contents of (" << SegName << "," << SectName << ") section\n";
+      if (!NoLeadingHeaders)
+        outs() << "Contents of (" << SegName << "," << SectName << ") section\n";
       StringRef BytesStr;
       Section.getContents(BytesStr);
       const char *sect = reinterpret_cast<const char *>(BytesStr.data());
@@ -4572,6 +4573,12 @@ static void print_class64_t(uint64_t p, struct DisassembleInfo *info) {
                        n_value, c.superclass);
   if (name != nullptr)
     outs() << " " << name;
+  else {
+    name = get_dyld_bind_info_symbolname(S.getAddress() +
+             offset + offsetof(struct class64_t, superclass), info);
+    if (name != nullptr)
+      outs() << " " << name;
+  }
   outs() << "\n";
 
   outs() << "         cache " << format("0x%" PRIx64, c.cache);

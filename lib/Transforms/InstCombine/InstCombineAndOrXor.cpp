@@ -1922,8 +1922,9 @@ Value *InstCombiner::foldOrOfFCmps(FCmpInst *LHS, FCmpInst *RHS) {
 ///     (A & C1) | B
 ///
 /// when the XOR of the two constants is "all ones" (-1).
-Instruction *InstCombiner::FoldOrWithConstants(BinaryOperator &I, Value *Op,
-                                               Value *A, Value *B, Value *C) {
+static Instruction *FoldOrWithConstants(BinaryOperator &I, Value *Op,
+                                        Value *A, Value *B, Value *C,
+                                        InstCombiner::BuilderTy *Builder) {
   ConstantInt *CI1 = dyn_cast<ConstantInt>(C);
   if (!CI1) return nullptr;
 
@@ -1944,15 +1945,16 @@ Instruction *InstCombiner::FoldOrWithConstants(BinaryOperator &I, Value *Op,
 
 /// \brief This helper function folds:
 ///
-///     ((A | B) & C1) ^ (B & C2)
+///     ((A ^ B) & C1) | (B & C2)
 ///
 /// into:
 ///
 ///     (A & C1) ^ B
 ///
 /// when the XOR of the two constants is "all ones" (-1).
-Instruction *InstCombiner::FoldXorWithConstants(BinaryOperator &I, Value *Op,
-                                                Value *A, Value *B, Value *C) {
+static Instruction *FoldXorWithConstants(BinaryOperator &I, Value *Op,
+                                         Value *A, Value *B, Value *C,
+                                         InstCombiner::BuilderTy *Builder) {
   ConstantInt *CI1 = dyn_cast<ConstantInt>(C);
   if (!CI1)
     return nullptr;
@@ -2112,28 +2114,24 @@ Instruction *InstCombiner::visitOr(BinaryOperator &I) {
     }
 
     // ((A|B)&1)|(B&-2) -> (A&1) | B
-    if (match(A, m_Or(m_Value(V1), m_Specific(B))) ||
-        match(A, m_Or(m_Specific(B), m_Value(V1)))) {
-      Instruction *Ret = FoldOrWithConstants(I, Op1, V1, B, C);
-      if (Ret) return Ret;
+    if (match(A, m_c_Or(m_Value(V1), m_Specific(B)))) {
+      if (Instruction *Ret = FoldOrWithConstants(I, Op1, V1, B, C, Builder))
+        return Ret;
     }
     // (B&-2)|((A|B)&1) -> (A&1) | B
-    if (match(B, m_Or(m_Specific(A), m_Value(V1))) ||
-        match(B, m_Or(m_Value(V1), m_Specific(A)))) {
-      Instruction *Ret = FoldOrWithConstants(I, Op0, A, V1, D);
-      if (Ret) return Ret;
+    if (match(B, m_c_Or(m_Specific(A), m_Value(V1)))) {
+      if (Instruction *Ret = FoldOrWithConstants(I, Op0, A, V1, D, Builder))
+        return Ret;
     }
     // ((A^B)&1)|(B&-2) -> (A&1) ^ B
-    if (match(A, m_Xor(m_Value(V1), m_Specific(B))) ||
-        match(A, m_Xor(m_Specific(B), m_Value(V1)))) {
-      Instruction *Ret = FoldXorWithConstants(I, Op1, V1, B, C);
-      if (Ret) return Ret;
+    if (match(A, m_c_Xor(m_Value(V1), m_Specific(B)))) {
+      if (Instruction *Ret = FoldXorWithConstants(I, Op1, V1, B, C, Builder))
+        return Ret;
     }
     // (B&-2)|((A^B)&1) -> (A&1) ^ B
-    if (match(B, m_Xor(m_Specific(A), m_Value(V1))) ||
-        match(B, m_Xor(m_Value(V1), m_Specific(A)))) {
-      Instruction *Ret = FoldXorWithConstants(I, Op0, A, V1, D);
-      if (Ret) return Ret;
+    if (match(B, m_c_Xor(m_Specific(A), m_Value(V1)))) {
+      if (Instruction *Ret = FoldXorWithConstants(I, Op0, A, V1, D, Builder))
+        return Ret;
     }
   }
 
@@ -2348,6 +2346,30 @@ Value *InstCombiner::foldXorOfICmps(ICmpInst *LHS, ICmpInst *RHS) {
       unsigned Code = getICmpCode(LHS) ^ getICmpCode(RHS);
       bool isSigned = LHS->isSigned() || RHS->isSigned();
       return getNewICmpValue(isSigned, Code, Op0, Op1, Builder);
+    }
+  }
+
+  // Instead of trying to imitate the folds for and/or, decompose this 'xor'
+  // into those logic ops. That is, try to turn this into an and-of-icmps
+  // because we have many folds for that pattern.
+  //
+  // This is based on a truth table definition of xor:
+  // X ^ Y --> (X | Y) & !(X & Y)
+  if (Value *OrICmp = SimplifyBinOp(Instruction::Or, LHS, RHS, SQ)) {
+    // TODO: If OrICmp is true, then the definition of xor simplifies to !(X&Y).
+    // TODO: If OrICmp is false, the whole thing is false (InstSimplify?).
+    if (Value *AndICmp = SimplifyBinOp(Instruction::And, LHS, RHS, SQ)) {
+      // TODO: Independently handle cases where the 'and' side is a constant.
+      if (OrICmp == LHS && AndICmp == RHS && RHS->hasOneUse()) {
+        // (LHS | RHS) & !(LHS & RHS) --> LHS & !RHS
+        RHS->setPredicate(RHS->getInversePredicate());
+        return Builder->CreateAnd(LHS, RHS);
+      }
+      if (OrICmp == RHS && AndICmp == LHS && LHS->hasOneUse()) {
+        // !(LHS & RHS) & (LHS | RHS) --> !LHS & RHS
+        LHS->setPredicate(LHS->getInversePredicate());
+        return Builder->CreateAnd(LHS, RHS);
+      }
     }
   }
 
