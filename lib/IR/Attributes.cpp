@@ -1005,9 +1005,6 @@ AttributeList AttributeList::get(LLVMContext &C,
   unsigned MaxSize = 0;
   for (AttributeList List : Attrs)
     MaxSize = std::max(MaxSize, List.getNumAttrSets());
-    
-  if (MaxSize == 0)
-    return AttributeList();
 
   // If every list was empty, there is no point in merging the lists.
   if (MaxSize == 0)
