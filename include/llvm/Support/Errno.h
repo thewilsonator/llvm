@@ -30,12 +30,10 @@ std::string StrError();
 /// Like the no-argument version above, but uses \p errnum instead of errno.
 std::string StrError(int errnum);
 
-template <typename Fun, typename... Args,
-          typename ResultT =
-              typename std::result_of<Fun const &(const Args &...)>::type>
-inline ResultT RetryAfterSignal(ResultT Fail, const Fun &F,
-                                const Args &... As) {
-  ResultT Res;
+template <typename FailT, typename Fun, typename... Args>
+inline auto RetryAfterSignal(const FailT &Fail, const Fun &F,
+                             const Args &... As) -> decltype(F(As...)) {
+  decltype(F(As...)) Res;
   do
     Res = F(As...);
   while (Res == Fail && errno == EINTR);

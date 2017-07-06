@@ -30,4 +30,7 @@ TEST(ErrnoTest, RetryAfterSignal) {
   EXPECT_EQ(2u, calls);
 
   EXPECT_EQ(1, RetryAfterSignal(-1, [](int x) { return x; }, 1));
+
+  std::unique_ptr<int> P(RetryAfterSignal(nullptr, [] { return new int(47); }));
+  EXPECT_EQ(47, *P);
 }
