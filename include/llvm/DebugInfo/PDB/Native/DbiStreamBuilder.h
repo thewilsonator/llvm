@@ -15,6 +15,7 @@
 #include "llvm/Support/Error.h"
 
 #include "llvm/DebugInfo/PDB/Native/PDBFile.h"
+#include "llvm/DebugInfo/PDB/Native/PDBStringTableBuilder.h"
 #include "llvm/DebugInfo/PDB/Native/RawConstants.h"
 #include "llvm/DebugInfo/PDB/PDBTypes.h"
 #include "llvm/Support/BinaryByteStream.h"
@@ -54,6 +55,8 @@ public:
   // Add given bytes as a new stream.
   Error addDbgStream(pdb::DbgHeaderType Type, ArrayRef<uint8_t> Data);
 
+  uint32_t addECName(StringRef Name);
+
   uint32_t calculateSerializedLength() const;
 
   Expected<DbiModuleDescriptorBuilder &> addModuleInfo(StringRef ModuleName);
@@ -75,7 +78,7 @@ public:
 private:
   struct DebugStream {
     ArrayRef<uint8_t> Data;
-    uint16_t StreamNumber = 0;
+    uint16_t StreamNumber = kInvalidStreamIndex;
   };
 
   Error finalize();
@@ -108,6 +111,7 @@ private:
 
   StringMap<uint32_t> SourceFileNames;
 
+  PDBStringTableBuilder ECNamesBuilder;
   WritableBinaryStreamRef NamesBuffer;
   MutableBinaryByteStream FileInfoBuffer;
   std::vector<SectionContrib> SectionContribs;
