@@ -1814,9 +1814,21 @@ Instruction *InstCombiner::foldICmpOrConstant(ICmpInst &Cmp, BinaryOperator *Or,
         Builder.CreateICmp(Pred, P, ConstantInt::getNullValue(P->getType()));
     Value *CmpQ =
         Builder.CreateICmp(Pred, Q, ConstantInt::getNullValue(Q->getType()));
-    auto LogicOpc = Pred == ICmpInst::Predicate::ICMP_EQ ? Instruction::And
-                                                         : Instruction::Or;
-    return BinaryOperator::Create(LogicOpc, CmpP, CmpQ);
+    auto BOpc = Pred == CmpInst::ICMP_EQ ? Instruction::And : Instruction::Or;
+    return BinaryOperator::Create(BOpc, CmpP, CmpQ);
+  }
+
+  // Are we using xors to bitwise check for a pair of (in)equalities? Convert to
+  // a shorter form that has more potential to be folded even further.
+  Value *X1, *X2, *X3, *X4;
+  if (match(Or->getOperand(0), m_OneUse(m_Xor(m_Value(X1), m_Value(X2)))) &&
+      match(Or->getOperand(1), m_OneUse(m_Xor(m_Value(X3), m_Value(X4))))) {
+    // ((X1 ^ X2) || (X3 ^ X4)) == 0 --> (X1 == X2) && (X3 == X4)
+    // ((X1 ^ X2) || (X3 ^ X4)) != 0 --> (X1 != X2) || (X3 != X4)
+    Value *Cmp12 = Builder.CreateICmp(Pred, X1, X2);
+    Value *Cmp34 = Builder.CreateICmp(Pred, X3, X4);
+    auto BOpc = Pred == CmpInst::ICMP_EQ ? Instruction::And : Instruction::Or;
+    return BinaryOperator::Create(BOpc, Cmp12, Cmp34);
   }
 
   return nullptr;
@@ -3856,17 +3868,18 @@ static Instruction *processUMulZExtIdiom(ICmpInst &I, Value *MulVal,
       } else if (BinaryOperator *BO = dyn_cast<BinaryOperator>(U)) {
         assert(BO->getOpcode() == Instruction::And);
         // Replace (mul & mask) --> zext (mul.with.overflow & short_mask)
-        ConstantInt *CI = cast<ConstantInt>(BO->getOperand(1));
-        APInt ShortMask = CI->getValue().trunc(MulWidth);
+        Value *ShortMask =
+            Builder.CreateTrunc(BO->getOperand(1), Builder.getIntNTy(MulWidth));
         Value *ShortAnd = Builder.CreateAnd(Mul, ShortMask);
-        Instruction *Zext =
-            cast<Instruction>(Builder.CreateZExt(ShortAnd, BO->getType()));
-        IC.Worklist.Add(Zext);
+        Value *Zext = Builder.CreateZExt(ShortAnd, BO->getType());
+        if (auto *ZextI = dyn_cast<Instruction>(Zext))
+          IC.Worklist.Add(ZextI);
         IC.replaceInstUsesWith(*BO, Zext);
       } else {
         llvm_unreachable("Unexpected Binary operation");
       }
-      IC.Worklist.Add(cast<Instruction>(U));
+      if (auto *UI = dyn_cast<Instruction>(U))
+        IC.Worklist.Add(UI);
     }
   }
   if (isa<Instruction>(OtherVal))
@@ -4371,7 +4384,7 @@ static ICmpInst *canonicalizeCmpWithConstant(ICmpInst &I) {
 static Instruction *canonicalizeICmpBool(ICmpInst &I,
                                          InstCombiner::BuilderTy &Builder) {
   Value *A = I.getOperand(0), *B = I.getOperand(1);
-  assert(A->getType()->getScalarType()->isIntegerTy(1) && "Bools only");
+  assert(A->getType()->isIntOrIntVectorTy(1) && "Bools only");
 
   // A boolean compared to true/false can be simplified to Op0/true/false in
   // 14 out of the 20 (10 predicates * 2 constants) possible combinations.
@@ -4478,7 +4491,7 @@ Instruction *InstCombiner::visitICmpInst(ICmpInst &I) {
     }
   }
 
-  if (Op0->getType()->getScalarType()->isIntegerTy(1))
+  if (Op0->getType()->isIntOrIntVectorTy(1))
     if (Instruction *Res = canonicalizeICmpBool(I, Builder))
       return Res;
 

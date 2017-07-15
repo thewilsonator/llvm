@@ -155,6 +155,18 @@ public:
     return BaseT::getGEPCost(PointeeType, Ptr, Operands);
   }
 
+  int getExtCost(const Instruction *I, const Value *Src) {
+    if (getTLI()->isExtFree(I))
+      return TargetTransformInfo::TCC_Free;
+
+    if (isa<ZExtInst>(I) || isa<SExtInst>(I))
+      if (const LoadInst *LI = dyn_cast<LoadInst>(Src))
+        if (getTLI()->isExtLoad(LI, I, DL))
+          return TargetTransformInfo::TCC_Free;
+
+    return TargetTransformInfo::TCC_Basic;
+  }
+
   unsigned getIntrinsicCost(Intrinsic::ID IID, Type *RetTy,
                             ArrayRef<const Value *> Arguments) {
     return BaseT::getIntrinsicCost(IID, RetTy, Arguments);
@@ -428,7 +440,7 @@ public:
 
     std::pair<unsigned, MVT> LT = TLI->getTypeLegalizationCost(DL, Ty);
 
-    bool IsFloat = Ty->getScalarType()->isFloatingPointTy();
+    bool IsFloat = Ty->isFPOrFPVectorTy();
     // Assume that floating point arithmetic operations cost twice as much as
     // integer operations.
     unsigned OpCost = (IsFloat ? 2 : 1);

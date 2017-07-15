@@ -232,8 +232,7 @@ private:
 
   void recordRelocation(MCAssembler &Asm, const MCAsmLayout &Layout,
                         const MCFragment *Fragment, const MCFixup &Fixup,
-                        MCValue Target, bool &IsPCRel,
-                        uint64_t &FixedValue) override;
+                        MCValue Target, uint64_t &FixedValue) override;
 
   void executePostLayoutBinding(MCAssembler &Asm,
                                 const MCAsmLayout &Layout) override;
@@ -353,7 +352,10 @@ void WasmObjectWriter::recordRelocation(MCAssembler &Asm,
                                         const MCAsmLayout &Layout,
                                         const MCFragment *Fragment,
                                         const MCFixup &Fixup, MCValue Target,
-                                        bool &IsPCRel, uint64_t &FixedValue) {
+                                        uint64_t &FixedValue) {
+  MCAsmBackend &Backend = Asm.getBackend();
+  bool IsPCRel = Backend.getFixupKindInfo(Fixup.getKind()).Flags &
+                 MCFixupKindInfo::FKF_IsPCRel;
   const auto &FixupSection = cast<MCSectionWasm>(*Fragment->getParent());
   uint64_t C = Target.getConstant();
   uint64_t FixupOffset = Layout.getFragmentOffset(Fragment) + Fixup.getOffset();
@@ -404,15 +406,11 @@ void WasmObjectWriter::recordRelocation(MCAssembler &Asm,
   const MCSymbolRefExpr *RefA = Target.getSymA();
   const auto *SymA = RefA ? cast<MCSymbolWasm>(&RefA->getSymbol()) : nullptr;
 
-  bool ViaWeakRef = false;
   if (SymA && SymA->isVariable()) {
     const MCExpr *Expr = SymA->getVariableValue();
-    if (const auto *Inner = dyn_cast<MCSymbolRefExpr>(Expr)) {
-      if (Inner->getKind() == MCSymbolRefExpr::VK_WEAKREF) {
-        SymA = cast<MCSymbolWasm>(&Inner->getSymbol());
-        ViaWeakRef = true;
-      }
-    }
+    const auto *Inner = cast<MCSymbolRefExpr>(Expr);
+    if (Inner->getKind() == MCSymbolRefExpr::VK_WEAKREF)
+      llvm_unreachable("weakref used in reloc not yet implemented");
   }
 
   // Put any constant offset in an addend. Offsets can be negative, and
@@ -420,12 +418,8 @@ void WasmObjectWriter::recordRelocation(MCAssembler &Asm,
   // be negative and don't wrap.
   FixedValue = 0;
 
-  if (SymA) {
-    if (ViaWeakRef)
-      llvm_unreachable("weakref used in reloc not yet implemented");
-    else
-      SymA->setUsedInReloc();
-  }
+  if (SymA)
+    SymA->setUsedInReloc();
 
   assert(!IsPCRel);
   assert(SymA);
@@ -928,7 +922,7 @@ uint32_t WasmObjectWriter::registerFunctionType(const MCSymbolWasm& Symbol) {
   WasmFunctionType F;
   if (Symbol.isVariable()) {
     const MCExpr *Expr = Symbol.getVariableValue();
-    auto *Inner = dyn_cast<MCSymbolRefExpr>(Expr);
+    auto *Inner = cast<MCSymbolRefExpr>(Expr);
     const auto *ResolvedSym = cast<MCSymbolWasm>(&Inner->getSymbol());
     F.Returns = ResolvedSym->getReturns();
     F.Params = ResolvedSym->getParams();
@@ -1197,7 +1191,7 @@ void WasmObjectWriter::writeObject(MCAssembler &Asm,
                                                  Align->getMaxBytesToEmit());
           DataBytes.resize(Size, Value);
         } else if (auto *Fill = dyn_cast<MCFillFragment>(&Frag)) {
-          DataBytes.insert(DataBytes.end(), Size, Fill->getValue());
+          DataBytes.insert(DataBytes.end(), Fill->getSize(), Fill->getValue());
         } else {
           const auto &DataFrag = cast<MCDataFragment>(Frag);
           const SmallVectorImpl<char> &Contents = DataFrag.getContents();
@@ -1246,7 +1240,7 @@ void WasmObjectWriter::writeObject(MCAssembler &Asm,
     const auto &WS = static_cast<const MCSymbolWasm &>(S);
     // Find the target symbol of this weak alias and export that index
     const MCExpr *Expr = WS.getVariableValue();
-    auto *Inner = dyn_cast<MCSymbolRefExpr>(Expr);
+    auto *Inner = cast<MCSymbolRefExpr>(Expr);
     const auto *ResolvedSym = cast<MCSymbolWasm>(&Inner->getSymbol());
     DEBUG(dbgs() << WS.getName() << ": weak alias of '" << *ResolvedSym << "'\n");
     assert(SymbolIndices.count(ResolvedSym) > 0);

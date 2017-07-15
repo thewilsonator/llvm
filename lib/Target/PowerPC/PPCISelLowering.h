@@ -616,7 +616,7 @@ namespace llvm {
     /// is not better represented as reg+reg.  If Aligned is true, only accept
     /// displacements suitable for STD and friends, i.e. multiples of 4.
     bool SelectAddressRegImm(SDValue N, SDValue &Disp, SDValue &Base,
-                             SelectionDAG &DAG, bool Aligned) const;
+                             SelectionDAG &DAG, unsigned Alignment) const;
 
     /// SelectAddressRegRegOnly - Given the specified addressed, force it to be
     /// represented as an indexed [r+r] operation.
@@ -1096,8 +1096,8 @@ namespace llvm {
                                            ISD::ArgFlagsTy &ArgFlags,
                                            CCState &State);
 
-    bool isIntS16Immediate(SDNode *N, int16_t &Imm);
-    bool isIntS16Immediate(SDValue Op, int16_t &Imm);
+  bool isIntS16Immediate(SDNode *N, int16_t &Imm);
+  bool isIntS16Immediate(SDValue Op, int16_t &Imm);
 
 } // end namespace llvm
 

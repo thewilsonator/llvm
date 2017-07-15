@@ -52,9 +52,6 @@ using namespace llvm;
 #define GET_INSTRINFO_CTOR_DTOR
 #include "AArch64GenInstrInfo.inc"
 
-static const MachineMemOperand::Flags MOSuppressPair =
-    MachineMemOperand::MOTargetFlag1;
-
 static cl::opt<unsigned>
 TBZDisplacementBits("aarch64-tbz-offset-bits", cl::Hidden, cl::init(14),
                     cl::desc("Restrict range of TB[N]Z instructions (DEBUG)"));
@@ -1713,6 +1710,13 @@ void AArch64InstrInfo::suppressLdStPair(MachineInstr &MI) const {
   if (MI.memoperands_empty())
     return;
   (*MI.memoperands_begin())->setFlags(MOSuppressPair);
+}
+
+/// Check all MachineMemOperands for a hint that the load/store is strided.
+bool AArch64InstrInfo::isStridedAccess(const MachineInstr &MI) const {
+  return llvm::any_of(MI.memoperands(), [](MachineMemOperand *MMO) {
+    return MMO->getFlags() & MOStridedAccess;
+  });
 }
 
 bool AArch64InstrInfo::isUnscaledLdSt(unsigned Opc) const {
@@ -3671,12 +3675,17 @@ enum class FMAInstKind { Default, Indexed, Accumulator };
 ///  F|MUL I=A,B,0
 ///  F|ADD R,I,C
 ///  ==> F|MADD R,A,B,C
+/// \param MF Containing MachineFunction
+/// \param MRI Register information
+/// \param TII Target information
 /// \param Root is the F|ADD instruction
 /// \param [out] InsInstrs is a vector of machine instructions and will
 /// contain the generated madd instruction
 /// \param IdxMulOpd is index of operand in Root that is the result of
 /// the F|MUL. In the example above IdxMulOpd is 1.
 /// \param MaddOpc the opcode fo the f|madd instruction
+/// \param RC Register class of operands
+/// \param kind of fma instruction (addressing mode) to be generated
 static MachineInstr *
 genFusedMultiply(MachineFunction &MF, MachineRegisterInfo &MRI,
                  const TargetInstrInfo *TII, MachineInstr &Root,
@@ -3735,6 +3744,9 @@ genFusedMultiply(MachineFunction &MF, MachineRegisterInfo &MRI,
 ///   ADD R,I,Imm
 ///   ==> ORR  V, ZR, Imm
 ///   ==> MADD R,A,B,V
+/// \param MF Containing MachineFunction
+/// \param MRI Register information
+/// \param TII Target information
 /// \param Root is the ADD instruction
 /// \param [out] InsInstrs is a vector of machine instructions and will
 /// contain the generated madd instruction
@@ -3743,6 +3755,7 @@ genFusedMultiply(MachineFunction &MF, MachineRegisterInfo &MRI,
 /// \param MaddOpc the opcode fo the madd instruction
 /// \param VR is a virtual register that holds the value of an ADD operand
 /// (V in the example above).
+/// \param RC Register class of operands
 static MachineInstr *genMaddR(MachineFunction &MF, MachineRegisterInfo &MRI,
                               const TargetInstrInfo *TII, MachineInstr &Root,
                               SmallVectorImpl<MachineInstr *> &InsInstrs,
@@ -4418,6 +4431,14 @@ AArch64InstrInfo::getSerializableBitmaskMachineOperandTargetFlags() const {
       {MO_GOT, "aarch64-got"},
       {MO_NC, "aarch64-nc"},
       {MO_TLS, "aarch64-tls"}};
+  return makeArrayRef(TargetFlags);
+}
+
+ArrayRef<std::pair<MachineMemOperand::Flags, const char *>>
+AArch64InstrInfo::getSerializableMachineMemOperandTargetFlags() const {
+  static const std::pair<MachineMemOperand::Flags, const char *> TargetFlags[] =
+      {{MOSuppressPair, "aarch64-suppress-pair"},
+       {MOStridedAccess, "aarch64-strided-access"}};
   return makeArrayRef(TargetFlags);
 }
 
