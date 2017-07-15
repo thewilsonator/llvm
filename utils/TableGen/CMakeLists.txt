@@ -30,6 +30,7 @@ add_tablegen(llvm-tblgen LLVM
   RegisterBankEmitter.cpp
   RegisterInfoEmitter.cpp
   SearchableTableEmitter.cpp
+  SPIRVTableEmitter.cpp
   SubtargetEmitter.cpp
   SubtargetFeatureInfo.cpp
   TableGen.cpp
