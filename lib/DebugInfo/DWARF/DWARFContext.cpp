@@ -427,10 +427,7 @@ bool DWARFContext::verify(raw_ostream &OS, DIDumpType DumpType) {
     if (!verifier.handleDebugLine())
       Success = false;
   }
-  if (DumpType == DIDT_All || DumpType == DIDT_AppleNames) {
-    if (!verifier.handleAppleNames())
-      Success = false;
-  }
+  Success &= verifier.handleAccelTables();
   return Success;
 }
 
@@ -915,6 +912,12 @@ ErrorPolicy DWARFContext::defaultErrorHandler(Error E) {
   errs() << "error: " + toString(std::move(E)) << '\n';
   return ErrorPolicy::Continue;
 }
+
+namespace {
+struct DWARFSectionMap final : public DWARFSection {
+  RelocAddrMap Relocs;
+};
+} // namespace
 
 class DWARFObjInMemory final : public DWARFObject {
   bool IsLittleEndian;

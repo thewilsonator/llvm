@@ -2457,13 +2457,38 @@ let Predicates = Preds in {
                               NewInf.KRC)>;
 
   def : Pat<(insert_subvector (NewInf.KVT immAllZerosV),
-                              (_.KVT (X86cmpm (_.VT _.RC:$src1),
+                              (_.KVT (and _.KRCWM:$mask, 
+                                          (X86cmpm (_.VT _.RC:$src1), 
+                                                   (_.VT _.RC:$src2), 
+                                                    imm:$cc))),
+                              (i64 0)),
+            (COPY_TO_REGCLASS (!cast<Instruction>(InstrStr##rrik) _.KRCWM:$mask,
+                                                                  _.RC:$src1, 
+                                                                  _.RC:$src2,
+                                                                  imm:$cc),
+                              NewInf.KRC)>;
+  
+  def : Pat<(insert_subvector (NewInf.KVT immAllZerosV),
+                              (_.KVT (X86cmpm (_.VT _.RC:$src1), 
                                               (_.VT (bitconvert (_.LdFrag addr:$src2))),
                                               imm:$cc)),
                               (i64 0)),
             (COPY_TO_REGCLASS (!cast<Instruction>(InstrStr##rmi) _.RC:$src1,
                                                                  addr:$src2,
                                                                  imm:$cc),
+                              NewInf.KRC)>;
+
+  def : Pat<(insert_subvector (NewInf.KVT immAllZerosV),
+                              (_.KVT (and _.KRCWM:$mask, 
+                                         (X86cmpm (_.VT _.RC:$src1), 
+                                                  (_.VT (bitconvert 
+                                                         (_.LdFrag addr:$src2))),
+                                                  imm:$cc))),
+                              (i64 0)),
+            (COPY_TO_REGCLASS (!cast<Instruction>(InstrStr##rmik) _.KRCWM:$mask,
+                                                                  _.RC:$src1,
+                                                                  addr:$src2,
+                                                                  imm:$cc),
                               NewInf.KRC)>;
 
   def : Pat<(insert_subvector (NewInf.KVT immAllZerosV),
@@ -2474,6 +2499,19 @@ let Predicates = Preds in {
             (COPY_TO_REGCLASS (!cast<Instruction>(InstrStr##rmbi) _.RC:$src1,
                                                                   addr:$src2,
                                                                   imm:$cc),
+                              NewInf.KRC)>;
+
+  def : Pat<(insert_subvector (NewInf.KVT immAllZerosV),
+                              (_.KVT (and _.KRCWM:$mask, 
+                                          (X86cmpm (_.VT _.RC:$src1),
+                                                   (X86VBroadcast 
+                                                    (_.ScalarLdFrag addr:$src2)),
+                                                   imm:$cc))),
+                              (i64 0)),
+            (COPY_TO_REGCLASS (!cast<Instruction>(InstrStr##rmbik) _.KRCWM:$mask,
+                                                                   _.RC:$src1,
+                                                                   addr:$src2,
+                                                                   imm:$cc),
                               NewInf.KRC)>;
 }
 }
@@ -2492,6 +2530,19 @@ let Predicates = Preds in
             (COPY_TO_REGCLASS (!cast<Instruction>(InstrStr##rrib) _.RC:$src1,
                                                                  _.RC:$src2,
                                                                  imm:$cc),
+                              NewInf.KRC)>;
+
+  def : Pat<(insert_subvector (NewInf.KVT immAllZerosV),
+                              (_.KVT (and _.KRCWM:$mask, 
+                                          (X86cmpmRnd (_.VT _.RC:$src1), 
+                                                      (_.VT _.RC:$src2), 
+                                                      imm:$cc,
+                                                      (i32 FROUND_NO_EXC)))),
+                              (i64 0)),
+            (COPY_TO_REGCLASS (!cast<Instruction>(InstrStr##rribk) _.KRCWM:$mask, 
+                                                                   _.RC:$src1, 
+                                                                   _.RC:$src2,
+                                                                   imm:$cc),
                               NewInf.KRC)>;
 }
 
@@ -7581,6 +7632,7 @@ let Predicates = [HasAVX512, NoVLX, NoF16C] in {
 //  Unordered/Ordered scalar fp compare with Sea and set EFLAGS
 multiclass avx512_ord_cmp_sae<bits<8> opc, X86VectorVTInfo _,
                             string OpcodeStr> {
+  let hasSideEffects = 0 in
   def rb: AVX512<opc, MRMSrcReg, (outs), (ins _.RC:$src1, _.RC:$src2),
                  !strconcat(OpcodeStr, "\t{{sae}, $src2, $src1|$src1, $src2, {sae}}"),
                  [], IIC_SSE_COMIS_RR>, EVEX, EVEX_B, VEX_LIG, EVEX_V128,
