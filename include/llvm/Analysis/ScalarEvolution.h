@@ -610,6 +610,8 @@ private:
              !isa<SCEVCouldNotCompute>(MaxNotTaken);
     }
 
+    bool hasOperand(const SCEV *S) const;
+
     /// Test whether this ExitLimit contains all information.
     bool hasFullInfo() const {
       return !isa<SCEVCouldNotCompute>(ExactNotTaken);
@@ -1127,8 +1129,9 @@ private:
   /// to be a constant.
   Optional<APInt> computeConstantDifference(const SCEV *LHS, const SCEV *RHS);
 
-  /// Drop memoized information computed for S.
-  void forgetMemoizedResults(const SCEV *S);
+  /// Drop memoized information computed for S. Only erase Exit Limits info if
+  /// we expect that the operation we have made is going to change it.
+  void forgetMemoizedResults(const SCEV *S, bool EraseExitLimit = true);
 
   /// Return an existing SCEV for V if there is one, otherwise return nullptr.
   const SCEV *getExistingSCEV(Value *V);

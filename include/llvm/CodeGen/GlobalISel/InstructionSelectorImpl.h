@@ -29,7 +29,7 @@ bool InstructionSelector::executeMatchTable(
   uint64_t CurrentIdx = 0;
   SmallVector<uint64_t, 8> OnFailResumeAt;
 
-  typedef enum { RejectAndGiveUp, RejectAndResume } RejectAction;
+  enum RejectAction { RejectAndGiveUp, RejectAndResume };
   auto handleReject = [&]() -> RejectAction {
     DEBUG(dbgs() << CurrentIdx << ": Rejected\n");
     if (OnFailResumeAt.empty())
@@ -58,7 +58,6 @@ bool InstructionSelector::executeMatchTable(
       // As an optimisation we require that MIs[0] is always the root. Refuse
       // any attempt to modify it.
       assert(NewInsnID != 0 && "Refusing to modify MIs[0]");
-      (void)NewInsnID;
 
       MachineOperand &MO = State.MIs[InsnID]->getOperand(OpIdx);
       if (!MO.isReg()) {
@@ -74,9 +73,14 @@ bool InstructionSelector::executeMatchTable(
         break;
       }
 
-      assert((size_t)NewInsnID == State.MIs.size() &&
-             "Expected to store MIs in order");
-      State.MIs.push_back(MRI.getVRegDef(MO.getReg()));
+      MachineInstr *NewMI = MRI.getVRegDef(MO.getReg());
+      if ((size_t)NewInsnID < State.MIs.size())
+        State.MIs[NewInsnID] = NewMI;
+      else {
+        assert((size_t)NewInsnID == State.MIs.size() &&
+               "Expected to store MIs in order");
+        State.MIs.push_back(NewMI);
+      }
       DEBUG(dbgs() << CurrentIdx << ": MIs[" << NewInsnID
                    << "] = GIM_RecordInsn(" << InsnID << ", " << OpIdx
                    << ")\n");
@@ -213,7 +217,8 @@ bool InstructionSelector::executeMatchTable(
       assert(State.MIs[InsnID] != nullptr && "Used insn before defined");
       MachineOperand &OM = State.MIs[InsnID]->getOperand(OpIdx);
       if (!OM.isIntrinsicID() || OM.getIntrinsicID() != Value)
-        return false;
+        if (handleReject() == RejectAndGiveUp)
+          return false;
       break;
     }
     case GIM_CheckIsMBB: {
@@ -341,6 +346,23 @@ bool InstructionSelector::executeMatchTable(
       break;
     }
 
+    case GIR_CopyConstantAsSImm: {
+      int64_t NewInsnID = MatchTable[CurrentIdx++];
+      int64_t OldInsnID = MatchTable[CurrentIdx++];
+      assert(OutMIs[NewInsnID] && "Attempted to add to undefined instruction");
+      assert(State.MIs[OldInsnID]->getOpcode() == TargetOpcode::G_CONSTANT && "Expected G_CONSTANT");
+      if (State.MIs[OldInsnID]->getOperand(1).isCImm()) {
+        OutMIs[NewInsnID].addImm(
+            State.MIs[OldInsnID]->getOperand(1).getCImm()->getSExtValue());
+      } else if (State.MIs[OldInsnID]->getOperand(1).isImm())
+        OutMIs[NewInsnID].add(State.MIs[OldInsnID]->getOperand(1));
+      else
+        llvm_unreachable("Expected Imm or CImm operand");
+      DEBUG(dbgs() << CurrentIdx << ": GIR_CopyConstantAsSImm(OutMIs[" << NewInsnID
+                   << "], MIs[" << OldInsnID << "])\n");
+      break;
+    }
+
     case GIR_ConstrainOperandRC: {
       int64_t InsnID = MatchTable[CurrentIdx++];
       int64_t OpIdx = MatchTable[CurrentIdx++];
@@ -365,11 +387,17 @@ bool InstructionSelector::executeMatchTable(
     case GIR_MergeMemOperands: {
       int64_t InsnID = MatchTable[CurrentIdx++];
       assert(OutMIs[InsnID] && "Attempted to add to undefined instruction");
-      for (const auto *FromMI : State.MIs)
-        for (const auto &MMO : FromMI->memoperands())
-          OutMIs[InsnID].addMemOperand(MMO);
+
       DEBUG(dbgs() << CurrentIdx << ": GIR_MergeMemOperands(OutMIs[" << InsnID
-                   << "])\n");
+                   << "]");
+      int64_t MergeInsnID = GIU_MergeMemOperands_EndOfList;
+      while ((MergeInsnID = MatchTable[CurrentIdx++]) !=
+             GIU_MergeMemOperands_EndOfList) {
+        DEBUG(dbgs() << ", MIs[" << MergeInsnID << "]");
+        for (const auto &MMO : State.MIs[MergeInsnID]->memoperands())
+          OutMIs[InsnID].addMemOperand(MMO);
+      }
+      DEBUG(dbgs() << ")\n");
       break;
     }
     case GIR_EraseFromParent: {
