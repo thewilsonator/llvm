@@ -66,6 +66,57 @@ X86TTIImpl::getPopcntSupport(unsigned TyWidth) {
   return ST->hasPOPCNT() ? TTI::PSK_FastHardware : TTI::PSK_Software;
 }
 
+llvm::Optional<unsigned> X86TTIImpl::getCacheSize(
+  TargetTransformInfo::CacheLevel Level) const {
+  switch (Level) {
+  case TargetTransformInfo::CacheLevel::L1D:
+    //   - Penry
+    //   - Nehalem
+    //   - Westmere
+    //   - Sandy Bridge
+    //   - Ivy Bridge
+    //   - Haswell
+    //   - Broadwell
+    //   - Skylake
+    //   - Kabylake
+    return 32 * 1024;  //  32 KByte
+  case TargetTransformInfo::CacheLevel::L2D:
+    //   - Penry
+    //   - Nehalem
+    //   - Westmere
+    //   - Sandy Bridge
+    //   - Ivy Bridge
+    //   - Haswell
+    //   - Broadwell
+    //   - Skylake
+    //   - Kabylake
+    return 256 * 1024; // 256 KByte
+  }
+
+  llvm_unreachable("Unknown TargetTransformInfo::CacheLevel");
+}
+
+llvm::Optional<unsigned> X86TTIImpl::getCacheAssociativity(
+  TargetTransformInfo::CacheLevel Level) const {
+  //   - Penry
+  //   - Nehalem
+  //   - Westmere
+  //   - Sandy Bridge
+  //   - Ivy Bridge
+  //   - Haswell
+  //   - Broadwell
+  //   - Skylake
+  //   - Kabylake
+  switch (Level) {
+  case TargetTransformInfo::CacheLevel::L1D:
+    LLVM_FALLTHROUGH;
+  case TargetTransformInfo::CacheLevel::L2D:
+    return 8;
+  }
+
+  llvm_unreachable("Unknown TargetTransformInfo::CacheLevel");
+}
+
 unsigned X86TTIImpl::getNumberOfRegisters(bool Vector) {
   if (Vector && !ST->hasSSE1())
     return 0;
@@ -2111,6 +2162,21 @@ int X86TTIImpl::getIntImmCost(Intrinsic::ID IID, unsigned Idx, const APInt &Imm,
     break;
   }
   return X86TTIImpl::getIntImmCost(Imm, Ty);
+}
+
+unsigned X86TTIImpl::getUserCost(const User *U,
+                                 ArrayRef<const Value *> Operands) {
+  if (isa<StoreInst>(U)) {
+    Value *Ptr = U->getOperand(1);
+    // Store instruction with index and scale costs 2 Uops.
+    // Check the preceding GEP to identify non-const indices.
+    if (auto GEP = dyn_cast<GetElementPtrInst>(Ptr)) {
+      if (!all_of(GEP->indices(), [](Value *V) { return isa<Constant>(V); }))
+        return TTI::TCC_Basic * 2;
+    }
+    return TTI::TCC_Basic;
+  }
+  return BaseT::getUserCost(U, Operands);
 }
 
 // Return an average cost of Gather / Scatter instruction, maybe improved later

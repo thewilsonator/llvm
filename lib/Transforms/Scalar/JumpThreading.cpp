@@ -176,14 +176,17 @@ static void updatePredecessorProfileMetadata(PHINode *PN, BasicBlock *BB) {
       [](BasicBlock *IncomingBB,
          BasicBlock *PhiBB) -> std::pair<BasicBlock *, BasicBlock *> {
     auto *PredBB = IncomingBB;
-    while (auto *SinglePredBB = PredBB->getSinglePredecessor())
+    auto *SuccBB = PhiBB;
+    for (;;) {
+      BranchInst *PredBr = dyn_cast<BranchInst>(PredBB->getTerminator());
+      if (PredBr && PredBr->isConditional())
+        return {PredBB, SuccBB};
+      auto *SinglePredBB = PredBB->getSinglePredecessor();
+      if (!SinglePredBB)
+        return {nullptr, nullptr};
+      SuccBB = PredBB;
       PredBB = SinglePredBB;
-
-    BranchInst *PredBr = dyn_cast<BranchInst>(IncomingBB->getTerminator());
-    if (PredBr && PredBr->isConditional())
-      return {IncomingBB, PhiBB};
-
-    return {nullptr, nullptr};
+    }
   };
 
   for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i) {

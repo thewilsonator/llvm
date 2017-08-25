@@ -4574,6 +4574,15 @@ bool X86TargetLowering::shouldConvertConstantLoadToIntImm(const APInt &Imm,
   return true;
 }
 
+bool X86TargetLowering::convertSelectOfConstantsToMath(EVT VT) const {
+  // TODO: It might be a win to ease or lift this restriction, but the generic
+  // folds in DAGCombiner conflict with vector folds for an AVX512 target.
+  if (VT.isVector() && Subtarget.hasAVX512())
+    return false;
+
+  return true;
+}
+
 bool X86TargetLowering::isExtractSubvectorCheap(EVT ResVT, EVT SrcVT,
                                                 unsigned Index) const {
   if (!isOperationLegalOrCustom(ISD::EXTRACT_SUBVECTOR, ResVT))
@@ -8782,7 +8791,8 @@ static bool matchVectorShuffleAsBlend(SDValue V1, SDValue V2,
   return true;
 }
 
-uint64_t scaleVectorShuffleBlendMask(uint64_t BlendMask, int Size, int Scale) {
+static uint64_t scaleVectorShuffleBlendMask(uint64_t BlendMask, int Size,
+                                            int Scale) {
   uint64_t ScaledMask = 0;
   for (int i = 0; i != Size; ++i)
     if (BlendMask & (1ull << i))
@@ -24645,7 +24655,6 @@ const char *X86TargetLowering::getTargetNodeName(unsigned Opcode) const {
   case X86ISD::VPCOM:              return "X86ISD::VPCOM";
   case X86ISD::VPCOMU:             return "X86ISD::VPCOMU";
   case X86ISD::VPERMIL2:           return "X86ISD::VPERMIL2";
-  case X86ISD::FMADD:              return "X86ISD::FMADD";
   case X86ISD::FMSUB:              return "X86ISD::FMSUB";
   case X86ISD::FNMADD:             return "X86ISD::FNMADD";
   case X86ISD::FNMSUB:             return "X86ISD::FNMSUB";
@@ -29567,7 +29576,7 @@ static bool detectZextAbsDiff(const SDValue &Select, SDValue &Op0,
   APInt SplatVal;
   if ((CC == ISD::SETLT) &&
       !((ISD::isConstantSplatVector(SetCC.getOperand(1).getNode(), SplatVal) &&
-         SplatVal == 1) ||
+         SplatVal.isOneValue()) ||
         (ISD::isBuildVectorAllZeros(SetCC.getOperand(1).getNode()))))
     return false;
 
@@ -30628,6 +30637,9 @@ static SDValue combineSelect(SDNode *N, SelectionDAG &DAG,
     // Byte blends are only available in AVX2
     if (VT == MVT::v32i8 && !Subtarget.hasAVX2())
       return SDValue();
+    // There are no 512-bit blend instructions that use sign bits.
+    if (VT.is512BitVector())
+      return SDValue();
 
     assert(BitWidth >= 8 && BitWidth <= 64 && "Invalid mask size");
     APInt DemandedMask(APInt::getSignMask(BitWidth));
@@ -30731,12 +30743,7 @@ static SDValue combineSetCCAtomicArith(SDValue Cmp, X86::CondCode &CC,
   if (!CmpLHS.hasOneUse())
     return SDValue();
 
-  auto *CmpRHSC = dyn_cast<ConstantSDNode>(CmpRHS);
-  if (!CmpRHSC || CmpRHSC->getZExtValue() != 0)
-    return SDValue();
-
-  const unsigned Opc = CmpLHS.getOpcode();
-
+  unsigned Opc = CmpLHS.getOpcode();
   if (Opc != ISD::ATOMIC_LOAD_ADD && Opc != ISD::ATOMIC_LOAD_SUB)
     return SDValue();
 
@@ -30748,6 +30755,35 @@ static SDValue combineSetCCAtomicArith(SDValue Cmp, X86::CondCode &CC,
   APInt Addend = OpRHSC->getAPIntValue();
   if (Opc == ISD::ATOMIC_LOAD_SUB)
     Addend = -Addend;
+
+  auto *CmpRHSC = dyn_cast<ConstantSDNode>(CmpRHS);
+  if (!CmpRHSC)
+    return SDValue();
+
+  APInt Comparison = CmpRHSC->getAPIntValue();
+
+  // If the addend is the negation of the comparison value, then we can do
+  // a full comparison by emitting the atomic arithmetic is a locked sub.
+  if (Comparison == -Addend) {
+    // The CC is fine, but we need to rewrite the LHS of the comparison as an
+    // atomic sub.
+    auto *AN = cast<AtomicSDNode>(CmpLHS.getNode());
+    auto AtomicSub = DAG.getAtomic(
+        ISD::ATOMIC_LOAD_SUB, SDLoc(CmpLHS), CmpLHS.getValueType(),
+        /*Chain*/ CmpLHS.getOperand(0), /*LHS*/ CmpLHS.getOperand(1),
+        /*RHS*/ DAG.getConstant(-Addend, SDLoc(CmpRHS), CmpRHS.getValueType()),
+        AN->getMemOperand());
+    auto LockOp = lowerAtomicArithWithLOCK(AtomicSub, DAG);
+    DAG.ReplaceAllUsesOfValueWith(CmpLHS.getValue(0),
+                                  DAG.getUNDEF(CmpLHS.getValueType()));
+    DAG.ReplaceAllUsesOfValueWith(CmpLHS.getValue(1), LockOp.getValue(1));
+    return LockOp;
+  }
+
+  // We can handle comparisons with zero in a number of cases by manipulating
+  // the CC used.
+  if (!Comparison.isNullValue())
+    return SDValue();
 
   if (CC == X86::COND_S && Addend == 1)
     CC = X86::COND_LE;
@@ -33986,10 +34022,10 @@ static SDValue combineFneg(SDNode *N, SelectionDAG &DAG,
   unsigned NewOpcode = 0;
   if (Arg.hasOneUse()) {
     switch (Arg.getOpcode()) {
-    case X86ISD::FMADD:        NewOpcode = X86ISD::FNMSUB;       break;
+    case ISD::FMA:             NewOpcode = X86ISD::FNMSUB;       break;
     case X86ISD::FMSUB:        NewOpcode = X86ISD::FNMADD;       break;
     case X86ISD::FNMADD:       NewOpcode = X86ISD::FMSUB;        break;
-    case X86ISD::FNMSUB:       NewOpcode = X86ISD::FMADD;        break;
+    case X86ISD::FNMSUB:       NewOpcode = ISD::FMA;             break;
     case X86ISD::FMADD_RND:    NewOpcode = X86ISD::FNMSUB_RND;   break;
     case X86ISD::FMSUB_RND:    NewOpcode = X86ISD::FNMADD_RND;   break;
     case X86ISD::FNMADD_RND:   NewOpcode = X86ISD::FMSUB_RND;    break;
@@ -34583,14 +34619,14 @@ static SDValue combineFMA(SDNode *N, SelectionDAG &DAG,
 
   unsigned NewOpcode;
   if (!NegMul)
-    NewOpcode = (!NegC) ? X86ISD::FMADD : X86ISD::FMSUB;
+    NewOpcode = (!NegC) ? unsigned(ISD::FMA) : unsigned(X86ISD::FMSUB);
   else
     NewOpcode = (!NegC) ? X86ISD::FNMADD : X86ISD::FNMSUB;
 
-  // For FMA and FMADD, we risk reconstructing the node we started with.
+  // For FMA, we risk reconstructing the node we started with.
   // In order to avoid this, we check for negation or opcode change. If
   // one of the two happened, then it is a new node and we return it.
-  if (N->getOpcode() == X86ISD::FMADD || N->getOpcode() == ISD::FMA) {
+  if (N->getOpcode() == ISD::FMA) {
     if (HasNeg || NewOpcode != N->getOpcode())
       return DAG.getNode(NewOpcode, dl, VT, A, B, C);
     return SDValue();
@@ -34598,21 +34634,21 @@ static SDValue combineFMA(SDNode *N, SelectionDAG &DAG,
 
   if (N->getOpcode() == X86ISD::FMADD_RND) {
     switch (NewOpcode) {
-    case X86ISD::FMADD:  NewOpcode = X86ISD::FMADD_RND; break;
+    case ISD::FMA:       NewOpcode = X86ISD::FMADD_RND; break;
     case X86ISD::FMSUB:  NewOpcode = X86ISD::FMSUB_RND; break;
     case X86ISD::FNMADD: NewOpcode = X86ISD::FNMADD_RND; break;
     case X86ISD::FNMSUB: NewOpcode = X86ISD::FNMSUB_RND; break;
     }
   } else if (N->getOpcode() == X86ISD::FMADDS1_RND) {
     switch (NewOpcode) {
-    case X86ISD::FMADD:  NewOpcode = X86ISD::FMADDS1_RND; break;
+    case ISD::FMA:       NewOpcode = X86ISD::FMADDS1_RND; break;
     case X86ISD::FMSUB:  NewOpcode = X86ISD::FMSUBS1_RND; break;
     case X86ISD::FNMADD: NewOpcode = X86ISD::FNMADDS1_RND; break;
     case X86ISD::FNMSUB: NewOpcode = X86ISD::FNMSUBS1_RND; break;
     }
   } else if (N->getOpcode() == X86ISD::FMADDS3_RND) {
     switch (NewOpcode) {
-    case X86ISD::FMADD:  NewOpcode = X86ISD::FMADDS3_RND; break;
+    case ISD::FMA:       NewOpcode = X86ISD::FMADDS3_RND; break;
     case X86ISD::FMSUB:  NewOpcode = X86ISD::FMSUBS3_RND; break;
     case X86ISD::FNMADD: NewOpcode = X86ISD::FNMADDS3_RND; break;
     case X86ISD::FNMSUB: NewOpcode = X86ISD::FNMSUBS3_RND; break;
@@ -35349,7 +35385,8 @@ static SDValue combineIncDecVector(SDNode *N, SelectionDAG &DAG) {
 
   SDNode *N1 = N->getOperand(1).getNode();
   APInt SplatVal;
-  if (!ISD::isConstantSplatVector(N1, SplatVal) || !SplatVal.isOneValue())
+  if (!ISD::isConstantSplatVector(N1, SplatVal) ||
+      !SplatVal.isOneValue())
     return SDValue();
 
   SDValue AllOnesVec = getOnesVector(VT, DAG, SDLoc(N));
@@ -35763,7 +35800,6 @@ SDValue X86TargetLowering::PerformDAGCombine(SDNode *N,
   case X86ISD::VPERM2X128:
   case X86ISD::VZEXT_MOVL:
   case ISD::VECTOR_SHUFFLE: return combineShuffle(N, DAG, DCI,Subtarget);
-  case X86ISD::FMADD:
   case X86ISD::FMADD_RND:
   case X86ISD::FMADDS1_RND:
   case X86ISD::FMADDS3_RND:
@@ -36030,8 +36066,8 @@ X86TargetLowering::getConstraintType(StringRef Constraint) const {
     case 'v':
     case 'Y':
     case 'l':
-      return C_RegisterClass;
     case 'k': // AVX512 masking registers.
+      return C_RegisterClass;
     case 'a':
     case 'b':
     case 'c':
@@ -36063,8 +36099,15 @@ X86TargetLowering::getConstraintType(StringRef Constraint) const {
       switch (Constraint[1]) {
       default:
         break;
-      case 'k':
+      case 'z':
+      case '0':
         return C_Register;
+      case 'i':
+      case 'm':
+      case 'k':
+      case 't':
+      case '2':
+        return C_RegisterClass;
       }
     }
   }
@@ -36112,15 +36155,42 @@ TargetLowering::ConstraintWeight
     if (type->isX86_MMXTy() && Subtarget.hasMMX())
       weight = CW_SpecificReg;
     break;
-  case 'Y':
-    // Other "Y<x>" (e.g. "Yk") constraints should be implemented below.
-    if (constraint[1] == 'k') {
-      // Support for 'Yk' (similarly to the 'k' variant below).
-      weight = CW_SpecificReg;
+  case 'Y': {
+    unsigned Size = StringRef(constraint).size();
+    // Pick 'i' as the next char as 'Yi' and 'Y' are synonymous, when matching 'Y'
+    char NextChar = Size == 2 ? constraint[1] : 'i';
+    if (Size > 2)
       break;
+    switch (NextChar) {
+      default:
+        return CW_Invalid;
+      // XMM0
+      case 'z':
+      case '0':
+        if ((type->getPrimitiveSizeInBits() == 128) && Subtarget.hasSSE1())
+          return CW_SpecificReg;
+        return CW_Invalid;
+      // Conditional OpMask regs (AVX512)
+      case 'k':
+        if ((type->getPrimitiveSizeInBits() == 64) && Subtarget.hasAVX512())
+          return CW_Register;
+        return CW_Invalid;
+      // Any MMX reg
+      case 'm':
+        if (type->isX86_MMXTy() && Subtarget.hasMMX())
+          return weight;
+        return CW_Invalid;
+      // Any SSE reg when ISA >= SSE2, same as 'Y'
+      case 'i':
+      case 't':
+      case '2':
+        if (!Subtarget.hasSSE2())
+          return CW_Invalid;
+        break;
     }
-  // Else fall through (handle "Y" constraint).
+    // Fall through (handle "Y" constraint).
     LLVM_FALLTHROUGH;
+  }
   case 'v':
     if ((type->getPrimitiveSizeInBits() == 512) && Subtarget.hasAVX512())
       weight = CW_Register;
@@ -36132,7 +36202,8 @@ TargetLowering::ConstraintWeight
     break;
   case 'k':
     // Enable conditional vector operations using %k<#> registers.
-    weight = CW_SpecificReg;
+    if ((type->getPrimitiveSizeInBits() == 64) && Subtarget.hasAVX512())
+      weight = CW_Register;
     break;
   case 'I':
     if (ConstantInt *C = dyn_cast<ConstantInt>(info.CallOperandVal)) {
@@ -36534,6 +36605,17 @@ X86TargetLowering::getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
     switch (Constraint[1]) {
     default:
       break;
+    case 'i':
+    case 't':
+    case '2':
+      return getRegForInlineAsmConstraint(TRI, "Y", VT);
+    case 'm':
+      if (!Subtarget.hasMMX()) break;
+      return std::make_pair(0U, &X86::VR64RegClass);
+    case 'z':
+    case '0':
+      if (!Subtarget.hasSSE1()) break;
+      return std::make_pair(X86::XMM0, &X86::VR128RegClass);
     case 'k':
       // This register class doesn't allocate k0 for masked vector operation.
       if (Subtarget.hasAVX512()) { // Only supported in AVX512.
