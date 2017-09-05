@@ -426,7 +426,7 @@ Value *InstCombiner::SimplifyDemandedUseBits(Value *V, APInt DemandedMask,
       return I->getOperand(1);
 
     // Otherwise just compute the known bits of the result.
-    bool NSW = cast<OverflowingBinaryOperator>(I)->hasNoUnsignedWrap();
+    bool NSW = cast<OverflowingBinaryOperator>(I)->hasNoSignedWrap();
     Known = KnownBits::computeForAddSub(I->getOpcode() == Instruction::Add,
                                         NSW, LHSKnown, RHSKnown);
     break;
@@ -993,21 +993,22 @@ Value *InstCombiner::SimplifyDemandedVectorElts(Value *V, APInt DemandedElts,
       break;
     }
 
+    // The element inserted overwrites whatever was there, so the input demanded
+    // set is simpler than the output set.
+    unsigned IdxNo = Idx->getZExtValue();
+    APInt PreInsertDemandedElts = DemandedElts;
+    if (IdxNo < VWidth)
+      PreInsertDemandedElts.clearBit(IdxNo);
+    TmpV = SimplifyDemandedVectorElts(I->getOperand(0), PreInsertDemandedElts,
+                                      UndefElts, Depth + 1);
+    if (TmpV) { I->setOperand(0, TmpV); MadeChange = true; }
+
     // If this is inserting an element that isn't demanded, remove this
     // insertelement.
-    unsigned IdxNo = Idx->getZExtValue();
     if (IdxNo >= VWidth || !DemandedElts[IdxNo]) {
       Worklist.Add(I);
       return I->getOperand(0);
     }
-
-    // Otherwise, the element inserted overwrites whatever was there, so the
-    // input demanded set is simpler than the output set.
-    APInt DemandedElts2 = DemandedElts;
-    DemandedElts2.clearBit(IdxNo);
-    TmpV = SimplifyDemandedVectorElts(I->getOperand(0), DemandedElts2,
-                                      UndefElts, Depth + 1);
-    if (TmpV) { I->setOperand(0, TmpV); MadeChange = true; }
 
     // The inserted element is defined.
     UndefElts.clearBit(IdxNo);
