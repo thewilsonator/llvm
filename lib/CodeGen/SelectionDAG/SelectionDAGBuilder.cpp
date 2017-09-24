@@ -4809,23 +4809,27 @@ bool SelectionDAGBuilder::EmitFuncArgumentDbgValue(
     // Check if ValueMap has reg number.
     DenseMap<const Value *, unsigned>::iterator VMI = FuncInfo.ValueMap.find(V);
     if (VMI != FuncInfo.ValueMap.end()) {
-      auto *Ty = V->getType();
       const auto &TLI = DAG.getTargetLoweringInfo();
-      EVT VT = TLI.getValueType(DAG.getDataLayout(), Ty);
-      unsigned NumRegs = TLI.getNumRegisters(Ty->getContext(), VT);
+      RegsForValue RFV(V->getContext(), TLI, DAG.getDataLayout(), VMI->second,
+                       V->getType(), isABIRegCopy(V));
+      unsigned NumRegs =
+          std::accumulate(RFV.RegCount.begin(), RFV.RegCount.end(), 0);
       if (NumRegs > 1) {
-        // The registers are guaranteed to be allocated in sequence.
+        unsigned I = 0;
         unsigned Offset = 0;
-        MVT RegisterVT = TLI.getRegisterType(Ty->getContext(), VT);
-        unsigned RegisterSize = RegisterVT.getSizeInBits();
-        for (unsigned I = 0; I != NumRegs; ++I) {
-          Op = MachineOperand::CreateReg(VMI->second + I, false);
-          auto *FragmentExpr = DIExpression::createFragmentExpression(
-              Expr, Offset, RegisterSize);
-          FuncInfo.ArgDbgValues.push_back(
-              BuildMI(MF, DL, TII->get(TargetOpcode::DBG_VALUE), IsDbgDeclare,
-                      Op->getReg(), Variable, FragmentExpr));
-          Offset += RegisterSize;
+        auto RegisterVT = RFV.RegVTs.begin();
+        for (auto RegCount : RFV.RegCount) {
+          unsigned RegisterSize = (RegisterVT++)->getSizeInBits();
+          for (unsigned E = I + RegCount; I != E; ++I) {
+            // The vregs are guaranteed to be allocated in sequence.
+            Op = MachineOperand::CreateReg(VMI->second + I, false);
+            auto *FragmentExpr = DIExpression::createFragmentExpression(
+                Expr, Offset, RegisterSize);
+            FuncInfo.ArgDbgValues.push_back(
+                BuildMI(MF, DL, TII->get(TargetOpcode::DBG_VALUE), IsDbgDeclare,
+                        Op->getReg(), Variable, FragmentExpr));
+            Offset += RegisterSize;
+          }
         }
         return true;
       }
@@ -5105,37 +5109,48 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
     DAG.setRoot(CallResult.second);
     return nullptr;
   }
+  case Intrinsic::dbg_addr:
   case Intrinsic::dbg_declare: {
-    const DbgDeclareInst &DI = cast<DbgDeclareInst>(I);
+    const DbgInfoIntrinsic &DI = cast<DbgInfoIntrinsic>(I);
     DILocalVariable *Variable = DI.getVariable();
     DIExpression *Expression = DI.getExpression();
-    const Value *Address = DI.getAddress();
     assert(Variable && "Missing variable");
-    if (!Address) {
-      DEBUG(dbgs() << "Dropping debug info for " << DI << "\n");
-      return nullptr;
-    }
 
     // Check if address has undef value.
-    if (isa<UndefValue>(Address) ||
+    const Value *Address = DI.getVariableLocation();
+    if (!Address || isa<UndefValue>(Address) ||
         (Address->use_empty() && !isa<Argument>(Address))) {
       DEBUG(dbgs() << "Dropping debug info for " << DI << "\n");
       return nullptr;
     }
 
-    // Static allocas are handled more efficiently in the variable frame index
-    // side table.
-    if (const auto *AI =
-            dyn_cast<AllocaInst>(Address->stripInBoundsConstantOffsets()))
-      if (AI->isStaticAlloca() && FuncInfo.StaticAllocaMap.count(AI))
-        return nullptr;
+    bool isParameter = Variable->isParameter() || isa<Argument>(Address);
 
-    // Byval arguments with frame indices were already handled after argument
-    // lowering and before isel.
-    if (const auto *Arg =
-            dyn_cast<Argument>(Address->stripInBoundsConstantOffsets()))
-      if (FuncInfo.getArgumentFrameIndex(Arg) != INT_MAX)
-        return nullptr;
+    // Check if this variable can be described by a frame index, typically
+    // either as a static alloca or a byval parameter.
+    int FI = INT_MAX;
+    if (const auto *AI =
+            dyn_cast<AllocaInst>(Address->stripInBoundsConstantOffsets())) {
+      if (AI->isStaticAlloca()) {
+        auto I = FuncInfo.StaticAllocaMap.find(AI);
+        if (I != FuncInfo.StaticAllocaMap.end())
+          FI = I->second;
+      }
+    } else if (const auto *Arg = dyn_cast<Argument>(
+                   Address->stripInBoundsConstantOffsets())) {
+      FI = FuncInfo.getArgumentFrameIndex(Arg);
+    }
+
+    // llvm.dbg.addr is control dependent and always generates indirect
+    // DBG_VALUE instructions. llvm.dbg.declare is handled as a frame index in
+    // the MachineFunction variable table.
+    if (FI != INT_MAX) {
+      if (Intrinsic == Intrinsic::dbg_addr)
+        DAG.AddDbgValue(DAG.getFrameIndexDbgValue(Variable, Expression, FI, dl,
+                                                  SDNodeOrder),
+                        getRoot().getNode(), isParameter);
+      return nullptr;
+    }
 
     SDValue &N = NodeMap[Address];
     if (!N.getNode() && isa<Argument>(Address))
@@ -5146,7 +5161,6 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
       if (const BitCastInst *BCI = dyn_cast<BitCastInst>(Address))
         Address = BCI->getOperand(0);
       // Parameters are handled specially.
-      bool isParameter = Variable->isParameter() || isa<Argument>(Address);
       auto FINode = dyn_cast<FrameIndexSDNode>(N.getNode());
       if (isParameter && FINode) {
         // Byval parameter. We have a frame index at this point.
@@ -5650,6 +5664,18 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
   case Intrinsic::var_annotation:
     // Discard annotate attributes and assumptions
     return nullptr;
+
+  case Intrinsic::codeview_annotation: {
+    // Emit a label associated with this metadata.
+    MachineFunction &MF = DAG.getMachineFunction();
+    MCSymbol *Label =
+        MF.getMMI().getContext().createTempSymbol("annotation", true);
+    Metadata *MD = cast<MetadataAsValue>(I.getArgOperand(0))->getMetadata();
+    MF.addCodeViewAnnotation(Label, cast<MDNode>(MD));
+    Res = DAG.getLabelNode(ISD::ANNOTATION_LABEL, sdl, getRoot(), Label);
+    DAG.setRoot(Res);
+    return nullptr;
+  }
 
   case Intrinsic::init_trampoline: {
     const Function *F = cast<Function>(I.getArgOperand(1)->stripPointerCasts());
@@ -8782,11 +8808,19 @@ void SelectionDAGISel::LowerArguments(const Function &F) {
 
     SDB->setValue(&Arg, Res);
     if (!TM.Options.EnableFastISel && Res.getOpcode() == ISD::BUILD_PAIR) {
+      // We want to associate the argument with the frame index, among
+      // involved operands, that correspond to the lowest address. The
+      // getCopyFromParts function, called earlier, is swapping the order of
+      // the operands to BUILD_PAIR depending on endianness. The result of
+      // that swapping is that the least significant bits of the argument will
+      // be in the first operand of the BUILD_PAIR node, and the most
+      // significant bits will be in the second operand.
+      unsigned LowAddressOp = DAG.getDataLayout().isBigEndian() ? 1 : 0;
       if (LoadSDNode *LNode =
-          dyn_cast<LoadSDNode>(Res.getOperand(0).getNode()))
+          dyn_cast<LoadSDNode>(Res.getOperand(LowAddressOp).getNode()))
         if (FrameIndexSDNode *FI =
             dyn_cast<FrameIndexSDNode>(LNode->getBasePtr().getNode()))
-        FuncInfo->setArgumentFrameIndex(&Arg, FI->getIndex());
+          FuncInfo->setArgumentFrameIndex(&Arg, FI->getIndex());
     }
 
     // Update the SwiftErrorVRegDefMap.

@@ -91,6 +91,10 @@ static cl::opt<bool> EnableVectorPrint("enable-hexagon-vector-print",
   cl::Hidden, cl::ZeroOrMore, cl::init(false),
   cl::desc("Enable Hexagon Vector print instr pass"));
 
+static cl::opt<bool> EnableTrapUnreachable("hexagon-trap-unreachable",
+  cl::Hidden, cl::ZeroOrMore, cl::init(false),
+  cl::desc("Enable generating trap for unreachable"));
+
 /// HexagonTargetMachineModule - Note that this is used on hosts that
 /// cannot link in a library unless there are references into the
 /// library.  In particular, it seems that it is not possible to get
@@ -119,10 +123,12 @@ namespace llvm {
   void initializeHexagonExpandCondsetsPass(PassRegistry&);
   void initializeHexagonGenMuxPass(PassRegistry&);
   void initializeHexagonLoopIdiomRecognizePass(PassRegistry&);
+  void initializeHexagonVectorLoopCarriedReusePass(PassRegistry&);
   void initializeHexagonNewValueJumpPass(PassRegistry&);
   void initializeHexagonOptAddrModePass(PassRegistry&);
   void initializeHexagonPacketizerPass(PassRegistry&);
   Pass *createHexagonLoopIdiomPass();
+  Pass *createHexagonVectorLoopCarriedReusePass();
 
   FunctionPass *createHexagonBitSimplify();
   FunctionPass *createHexagonBranchRelaxation();
@@ -173,6 +179,7 @@ extern "C" void LLVMInitializeHexagonTarget() {
   initializeHexagonEarlyIfConversionPass(PR);
   initializeHexagonGenMuxPass(PR);
   initializeHexagonLoopIdiomRecognizePass(PR);
+  initializeHexagonVectorLoopCarriedReusePass(PR);
   initializeHexagonNewValueJumpPass(PR);
   initializeHexagonOptAddrModePass(PR);
   initializeHexagonPacketizerPass(PR);
@@ -195,6 +202,8 @@ HexagonTargetMachine::HexagonTargetMachine(const Target &T, const Triple &TT,
           TT, CPU, FS, Options, getEffectiveRelocModel(RM),
           getEffectiveCodeModel(CM), (HexagonNoOpt ? CodeGenOpt::None : OL)),
       TLOF(make_unique<HexagonTargetObjectFile>()) {
+  if (EnableTrapUnreachable)
+    this->Options.TrapUnreachable = true;
   initializeHexagonExpandCondsetsPass(*PassRegistry::getPassRegistry());
   initAsmInfo();
 }
@@ -230,6 +239,11 @@ void HexagonTargetMachine::adjustPassManager(PassManagerBuilder &PMB) {
     PassManagerBuilder::EP_LateLoopOptimizations,
     [&](const PassManagerBuilder &, legacy::PassManagerBase &PM) {
       PM.add(createHexagonLoopIdiomPass());
+    });
+  PMB.addExtension(
+    PassManagerBuilder::EP_LoopOptimizerEnd,
+    [&](const PassManagerBuilder &, legacy::PassManagerBase &PM) {
+      PM.add(createHexagonVectorLoopCarriedReusePass());
     });
 }
 

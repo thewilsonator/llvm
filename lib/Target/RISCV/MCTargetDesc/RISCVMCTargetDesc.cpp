@@ -12,8 +12,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCVMCTargetDesc.h"
-#include "RISCVMCAsmInfo.h"
 #include "InstPrinter/RISCVInstPrinter.h"
+#include "RISCVMCAsmInfo.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCInstrInfo.h"
@@ -28,6 +28,9 @@
 
 #define GET_REGINFO_MC_DESC
 #include "RISCVGenRegisterInfo.inc"
+
+#define GET_SUBTARGETINFO_MC_DESC
+#include "RISCVGenSubtargetInfo.inc"
 
 using namespace llvm;
 
@@ -64,5 +67,6 @@ extern "C" void LLVMInitializeRISCVTargetMC() {
     TargetRegistry::RegisterMCAsmBackend(*T, createRISCVAsmBackend);
     TargetRegistry::RegisterMCCodeEmitter(*T, createRISCVMCCodeEmitter);
     TargetRegistry::RegisterMCInstPrinter(*T, createRISCVMCInstPrinter);
+    TargetRegistry::RegisterMCSubtargetInfo(*T, createRISCVMCSubtargetInfoImpl);
   }
 }
