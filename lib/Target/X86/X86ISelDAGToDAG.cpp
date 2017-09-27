@@ -366,6 +366,24 @@ namespace {
       return CurDAG->getTargetConstant(Imm, DL, MVT::i32);
     }
 
+    SDValue getExtractVEXTRACTImmediate(SDNode *N, unsigned VecWidth,
+                                        const SDLoc &DL) {
+      assert((VecWidth == 128 || VecWidth == 256) && "Unexpected vector width");
+      uint64_t Index = N->getConstantOperandVal(1);
+      MVT VecVT = N->getOperand(0).getSimpleValueType();
+      unsigned NumElemsPerChunk = VecWidth / VecVT.getScalarSizeInBits();
+      return getI8Imm(Index / NumElemsPerChunk, DL);
+    }
+
+    SDValue getInsertVINSERTImmediate(SDNode *N, unsigned VecWidth,
+                                      const SDLoc &DL) {
+      assert((VecWidth == 128 || VecWidth == 256) && "Unexpected vector width");
+      uint64_t Index = N->getConstantOperandVal(2);
+      MVT VecVT = N->getSimpleValueType(0);
+      unsigned NumElemsPerChunk = VecWidth / VecVT.getScalarSizeInBits();
+      return getI8Imm(Index / NumElemsPerChunk, DL);
+    }
+
     /// Return an SDNode that returns the value of the global base register.
     /// Output instructions required to initialize the global base register,
     /// if necessary.
@@ -424,9 +442,44 @@ namespace {
     bool foldLoadStoreIntoMemOperand(SDNode *Node);
 
     bool matchBEXTRFromAnd(SDNode *Node);
+
+    bool isMaskZeroExtended(SDNode *N) const;
   };
 }
 
+
+// Returns true if this masked compare can be implemented legally with this
+// type.
+static bool isLegalMaskCompare(SDNode *N, const X86Subtarget *Subtarget) {
+  if (N->getOpcode() == X86ISD::PCMPEQM ||
+      N->getOpcode() == X86ISD::PCMPGTM ||
+      N->getOpcode() == X86ISD::CMPM ||
+      N->getOpcode() == X86ISD::CMPMU) {
+    // We can get 256-bit 8 element types here without VLX being enabled. When
+    // this happens we will use 512-bit operations and the mask will not be
+    // zero extended.
+    if (N->getOperand(0).getValueType() == MVT::v8i32 ||
+        N->getOperand(0).getValueType() == MVT::v8f32)
+      return Subtarget->hasVLX();
+
+    return true;
+  }
+
+  return false;
+}
+
+// Returns true if we can assume the writer of the mask has zero extended it
+// for us.
+bool X86DAGToDAGISel::isMaskZeroExtended(SDNode *N) const {
+  // If this is an AND, check if we have a compare on either side. As long as
+  // one side guarantees the mask is zero extended, the AND will preserve those
+  // zeros.
+  if (N->getOpcode() == ISD::AND)
+    return isLegalMaskCompare(N->getOperand(0).getNode(), Subtarget) ||
+           isLegalMaskCompare(N->getOperand(1).getNode(), Subtarget);
+
+  return isLegalMaskCompare(N, Subtarget);
+}
 
 bool
 X86DAGToDAGISel::IsProfitableToFold(SDValue N, SDNode *U, SDNode *Root) const {
