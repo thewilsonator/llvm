@@ -920,10 +920,8 @@ static unsigned getPatternSize(const TreePatternNode *P,
   if (P->isLeaf() && isa<IntInit>(P->getLeafValue()))
     Size += 2;
 
-  const ComplexPattern *AM = P->getComplexPatternInfo(CGP);
-  if (AM) {
+  if (const ComplexPattern *AM = P->getComplexPatternInfo(CGP)) {
     Size += AM->getComplexity();
-
     // We don't want to count any children twice, so return early.
     return Size;
   }
@@ -935,7 +933,7 @@ static unsigned getPatternSize(const TreePatternNode *P,
 
   // Count children in the count if they are also nodes.
   for (unsigned i = 0, e = P->getNumChildren(); i != e; ++i) {
-    TreePatternNode *Child = P->getChild(i);
+    const TreePatternNode *Child = P->getChild(i);
     if (!Child->isLeaf() && Child->getNumTypes()) {
       const TypeSetByHwMode &T0 = Child->getType(0);
       // At this point, all variable type sets should be simple, i.e. only
