@@ -34,6 +34,8 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/SlotIndexes.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/CodeGen/VirtRegMap.h"
 #include "llvm/MC/LaneBitmask.h"
 #include "llvm/MC/MCRegisterInfo.h"
@@ -44,8 +46,6 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -157,7 +157,7 @@ void LiveIntervals::print(raw_ostream &OS, const Module* ) const {
   // Dump the regunits.
   for (unsigned Unit = 0, UnitE = RegUnitRanges.size(); Unit != UnitE; ++Unit)
     if (LiveRange *LR = RegUnitRanges[Unit])
-      OS << PrintRegUnit(Unit, TRI) << ' ' << *LR << '\n';
+      OS << printRegUnit(Unit, TRI) << ' ' << *LR << '\n';
 
   // Dump the virtregs.
   for (unsigned i = 0, e = MRI->getNumVirtRegs(); i != e; ++i) {
@@ -335,7 +335,7 @@ void LiveIntervals::computeLiveInRegUnits() {
         }
         VNInfo *VNI = LR->createDeadDef(Begin, getVNInfoAllocator());
         (void)VNI;
-        DEBUG(dbgs() << ' ' << PrintRegUnit(Unit, TRI) << '#' << VNI->id);
+        DEBUG(dbgs() << ' ' << printRegUnit(Unit, TRI) << '#' << VNI->id);
       }
     }
     DEBUG(dbgs() << '\n');
@@ -698,11 +698,11 @@ void LiveIntervals::addKillFlags(const VirtRegMap *VRM) {
       // Check if any of the regunits are live beyond the end of RI. That could
       // happen when a physreg is defined as a copy of a virtreg:
       //
-      //   %EAX = COPY %vreg5
-      //   FOO %vreg5         <--- MI, cancel kill because %EAX is live.
-      //   BAR %EAX<kill>
+      //   %eax = COPY %vreg5
+      //   FOO %vreg5         <--- MI, cancel kill because %eax is live.
+      //   BAR %eax<kill>
       //
-      // There should be no kill flag on FOO when %vreg5 is rewritten as %EAX.
+      // There should be no kill flag on FOO when %vreg5 is rewritten as %eax.
       for (auto &RUP : RU) {
         const LiveRange &RURange = *RUP.first;
         LiveRange::const_iterator &I = RUP.second;
@@ -824,7 +824,13 @@ LiveIntervals::hasPHIKill(const LiveInterval &LI, const VNInfo *VNI) const {
 float LiveIntervals::getSpillWeight(bool isDef, bool isUse,
                                     const MachineBlockFrequencyInfo *MBFI,
                                     const MachineInstr &MI) {
-  BlockFrequency Freq = MBFI->getBlockFreq(MI.getParent());
+  return getSpillWeight(isDef, isUse, MBFI, MI.getParent());
+}
+
+float LiveIntervals::getSpillWeight(bool isDef, bool isUse,
+                                    const MachineBlockFrequencyInfo *MBFI,
+                                    const MachineBasicBlock *MBB) {
+  BlockFrequency Freq = MBFI->getBlockFreq(MBB);
   const float Scale = 1.0f / MBFI->getEntryFreq();
   return (isDef + isUse) * (Freq.getFrequency() * Scale);
 }
@@ -989,11 +995,11 @@ private:
     DEBUG({
       dbgs() << "     ";
       if (TargetRegisterInfo::isVirtualRegister(Reg)) {
-        dbgs() << PrintReg(Reg);
+        dbgs() << printReg(Reg);
         if (LaneMask.any())
           dbgs() << " L" << PrintLaneMask(LaneMask);
       } else {
-        dbgs() << PrintRegUnit(Reg, &TRI);
+        dbgs() << printRegUnit(Reg, &TRI);
       }
       dbgs() << ":\t" << LR << '\n';
     });

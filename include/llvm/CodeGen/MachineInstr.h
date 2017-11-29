@@ -22,11 +22,11 @@
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/CodeGen/MachineOperand.h"
+#include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/MC/MCInstrDesc.h"
 #include "llvm/Support/ArrayRecycler.h"
-#include "llvm/Target/TargetOpcodes.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -138,6 +138,17 @@ public:
 
   const MachineBasicBlock* getParent() const { return Parent; }
   MachineBasicBlock* getParent() { return Parent; }
+
+  /// Return the function that contains the basic block that this instruction
+  /// belongs to.
+  ///
+  /// Note: this is undefined behaviour if the instruction does not have a
+  /// parent.
+  const MachineFunction *getMF() const;
+  MachineFunction *getMF() {
+    return const_cast<MachineFunction *>(
+        static_cast<const MachineInstr *>(this)->getMF());
+  }
 
   /// Return the asm printer flags bitvector.
   uint8_t getAsmPrinterFlags() const { return AsmPrinterFlags; }
@@ -288,6 +299,21 @@ public:
   MachineOperand& getOperand(unsigned i) {
     assert(i < getNumOperands() && "getOperand() out of range!");
     return Operands[i];
+  }
+
+  /// Return true if operand \p OpIdx is a subregister index.
+  bool isOperandSubregIdx(unsigned OpIdx) const {
+    assert(getOperand(OpIdx).getType() == MachineOperand::MO_Immediate &&
+           "Expected MO_Immediate operand type.");
+    if (isExtractSubreg() && OpIdx == 2)
+      return true;
+    if (isInsertSubreg() && OpIdx == 3)
+      return true;
+    if (isRegSequence() && OpIdx > 1 && (OpIdx % 2) == 0)
+      return true;
+    if (isSubregToReg() && OpIdx == 3)
+      return true;
+    return false;
   }
 
   /// Returns the number of non-implicit operands.
@@ -771,9 +797,14 @@ public:
 
   bool isEHLabel() const { return getOpcode() == TargetOpcode::EH_LABEL; }
   bool isGCLabel() const { return getOpcode() == TargetOpcode::GC_LABEL; }
+  bool isAnnotationLabel() const {
+    return getOpcode() == TargetOpcode::ANNOTATION_LABEL;
+  }
 
   /// Returns true if the MachineInstr represents a label.
-  bool isLabel() const { return isEHLabel() || isGCLabel(); }
+  bool isLabel() const {
+    return isEHLabel() || isGCLabel() || isAnnotationLabel();
+  }
 
   bool isCFIInstruction() const {
     return getOpcode() == TargetOpcode::CFI_INSTRUCTION;

@@ -156,13 +156,11 @@ define void @testPR4459(x86_fp80 %a) {
 ; CHECK-LABEL: testPR4459:
 ; CHECK:       ## BB#0: ## %entry
 ; CHECK-NEXT:    subl $28, %esp
-; CHECK-NEXT:  Lcfi0:
 ; CHECK-NEXT:    .cfi_def_cfa_offset 32
 ; CHECK-NEXT:    fldt {{[0-9]+}}(%esp)
 ; CHECK-NEXT:    fstpt (%esp)
 ; CHECK-NEXT:    calll _ceil
 ; CHECK-NEXT:    fld %st(0)
-; CHECK-NEXT:    fxch %st(1)
 ; CHECK-NEXT:    ## InlineAsm Start
 ; CHECK-NEXT:    fistpl %st(0)
 ; CHECK-NEXT:    ## InlineAsm End
@@ -186,7 +184,6 @@ define void @testPR4484(x86_fp80 %a) {
 ; CHECK-LABEL: testPR4484:
 ; CHECK:       ## BB#0: ## %entry
 ; CHECK-NEXT:    subl $28, %esp
-; CHECK-NEXT:  Lcfi1:
 ; CHECK-NEXT:    .cfi_def_cfa_offset 32
 ; CHECK-NEXT:    fldt {{[0-9]+}}(%esp)
 ; CHECK-NEXT:    fstpt {{[0-9]+}}(%esp) ## 10-byte Folded Spill
@@ -440,9 +437,9 @@ entry:
 ; inline-asm instruction and the ST register was live across another
 ; inline-asm instruction.
 ;
-; INLINEASM <es:frndint> [sideeffect] [attdialect], $0:[regdef], %ST0<imp-def,tied5>, $1:[reguse tiedto:$0], %ST0<tied3>, $2:[clobber], %EFLAGS<earlyclobber,imp-def,dead>
-; INLINEASM <es:fldcw $0> [sideeffect] [mayload] [attdialect], $0:[mem], %EAX<undef>, 1, %noreg, 0, %noreg, $1:[clobber], %EFLAGS<earlyclobber,imp-def,dead>
-; %FP0<def> = COPY %ST0
+; INLINEASM <es:frndint> [sideeffect] [attdialect], $0:[regdef], %st0<imp-def,tied5>, $1:[reguse tiedto:$0], %st0<tied3>, $2:[clobber], %eflags<earlyclobber,imp-def,dead>
+; INLINEASM <es:fldcw $0> [sideeffect] [mayload] [attdialect], $0:[mem], %eax<undef>, 1, %noreg, 0, %noreg, $1:[clobber], %eflags<earlyclobber,imp-def,dead>
+; %fp0<def> = COPY %st0
 
 %struct.fpu_t = type { [8 x x86_fp80], x86_fp80, %struct.anon1, %struct.anon2, i32, i8, [15 x i8] }
 %struct.anon1 = type { i32, i32, i32 }
@@ -455,7 +452,6 @@ define void @test_live_st(i32 %a1) {
 ; CHECK-LABEL: test_live_st:
 ; CHECK:       ## BB#0: ## %entry
 ; CHECK-NEXT:    subl $12, %esp
-; CHECK-NEXT:  Lcfi2:
 ; CHECK-NEXT:    .cfi_def_cfa_offset 16
 ; CHECK-NEXT:    fldt (%eax)
 ; CHECK-NEXT:    cmpl $1, {{[0-9]+}}(%esp)

@@ -36,6 +36,8 @@
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/CodeGen/SelectionDAGISel.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/ValueTypes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/DebugLoc.h"
@@ -53,8 +55,6 @@
 #include "llvm/Support/KnownBits.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetInstrInfo.h"
-#include "llvm/Target/TargetRegisterInfo.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -579,8 +579,6 @@ bool PPCDAGToDAGISel::tryBitfieldInsert(SDNode *N) {
 
     unsigned MB, ME;
     if (isRunOfOnes(InsertMask, MB, ME)) {
-      SDValue Tmp1, Tmp2;
-
       if ((Op1Opc == ISD::SHL || Op1Opc == ISD::SRL) &&
           isInt32Immediate(Op1.getOperand(1), Value)) {
         Op1 = Op1.getOperand(0);
@@ -3220,9 +3218,9 @@ void PPCDAGToDAGISel::Select(SDNode *N) {
 
     // The first source operand is a TargetGlobalAddress or a TargetJumpTable.
     // If it must be toc-referenced according to PPCSubTarget, we generate:
-    //   LDtocL(<ga:@sym>, ADDIStocHA(%X2, <ga:@sym>))
+    //   LDtocL(<ga:@sym>, ADDIStocHA(%x2, <ga:@sym>))
     // Otherwise we generate:
-    //   ADDItocL(ADDIStocHA(%X2, <ga:@sym>), <ga:@sym>)
+    //   ADDItocL(ADDIStocHA(%x2, <ga:@sym>), <ga:@sym>)
     SDValue GA = N->getOperand(0);
     SDValue TOCbase = N->getOperand(1);
     SDNode *Tmp = CurDAG->getMachineNode(PPC::ADDIStocHA, dl, MVT::i64,

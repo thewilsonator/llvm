@@ -36,6 +36,11 @@
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/PseudoSourceValue.h"
+#include "llvm/CodeGen/TargetFrameLowering.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
+#include "llvm/CodeGen/TargetLowering.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/IR/Function.h"
@@ -46,11 +51,6 @@
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetFrameLowering.h"
-#include "llvm/Target/TargetInstrInfo.h"
-#include "llvm/Target/TargetLowering.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -374,7 +374,7 @@ void LiveDebugValues::transferDebugValue(const MachineInstr &MI,
 void LiveDebugValues::transferRegisterDef(MachineInstr &MI,
                                           OpenRangesSet &OpenRanges,
                                           const VarLocMap &VarLocIDs) {
-  MachineFunction *MF = MI.getParent()->getParent();
+  MachineFunction *MF = MI.getMF();
   const TargetLowering *TLI = MF->getSubtarget().getTargetLowering();
   unsigned SP = TLI->getStackPointerRegisterToSaveRestore();
   SparseBitVector<> KillSet;
@@ -450,14 +450,14 @@ void LiveDebugValues::transferSpillInst(MachineInstr &MI,
                                         VarLocMap &VarLocIDs,
                                         SpillMap &Spills) {
   unsigned Reg;
-  MachineFunction *MF = MI.getParent()->getParent();
+  MachineFunction *MF = MI.getMF();
   if (!isSpillInstruction(MI, MF, Reg))
     return;
 
   // Check if the register is the location of a debug value.
   for (unsigned ID : OpenRanges.getVarLocs()) {
     if (VarLocIDs[ID].isDescribedByReg() == Reg) {
-      DEBUG(dbgs() << "Spilling Register " << PrintReg(Reg, TRI) << '('
+      DEBUG(dbgs() << "Spilling Register " << printReg(Reg, TRI) << '('
                    << VarLocIDs[ID].Var.getVar()->getName() << ")\n");
 
       // Create a DBG_VALUE instruction to describe the Var in its spilled

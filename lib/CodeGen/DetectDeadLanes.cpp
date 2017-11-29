@@ -34,14 +34,14 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Passes.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/PassRegistry.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetInstrInfo.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 
 using namespace llvm;
 
@@ -526,7 +526,7 @@ bool DetectDeadLanes::runOnce(MachineFunction &MF) {
     for (unsigned RegIdx = 0; RegIdx < NumVirtRegs; ++RegIdx) {
       unsigned Reg = TargetRegisterInfo::index2VirtReg(RegIdx);
       const VRegInfo &Info = VRegInfos[RegIdx];
-      dbgs() << PrintReg(Reg, nullptr)
+      dbgs() << printReg(Reg, nullptr)
              << " Used: " << PrintLaneMask(Info.UsedLanes)
              << " Def: " << PrintLaneMask(Info.DefinedLanes) << '\n';
     }

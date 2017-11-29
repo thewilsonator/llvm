@@ -564,6 +564,27 @@ TEST_F(FileSystemTest, RealPath) {
   ASSERT_NO_ERROR(fs::remove_directories(Twine(TestDirectory) + "/test1"));
 }
 
+TEST_F(FileSystemTest, TempFileKeepDiscard) {
+  // We can keep then discard.
+  auto TempFileOrError = fs::TempFile::create(TestDirectory + "/test-%%%%");
+  ASSERT_TRUE((bool)TempFileOrError);
+  fs::TempFile File = std::move(*TempFileOrError);
+  ASSERT_FALSE((bool)File.keep(TestDirectory + "/keep"));
+  ASSERT_FALSE((bool)File.discard());
+  ASSERT_TRUE(fs::exists(TestDirectory + "/keep"));
+  ASSERT_NO_ERROR(fs::remove(TestDirectory + "/keep"));
+}
+
+TEST_F(FileSystemTest, TempFileDiscardDiscard) {
+  // We can discard twice.
+  auto TempFileOrError = fs::TempFile::create(TestDirectory + "/test-%%%%");
+  ASSERT_TRUE((bool)TempFileOrError);
+  fs::TempFile File = std::move(*TempFileOrError);
+  ASSERT_FALSE((bool)File.discard());
+  ASSERT_FALSE((bool)File.discard());
+  ASSERT_FALSE(fs::exists(TestDirectory + "/keep"));
+}
+
 TEST_F(FileSystemTest, TempFiles) {
   // Create a temp file.
   int FileDescriptor;
@@ -869,8 +890,8 @@ TEST_F(FileSystemTest, BrokenSymlinkDirectoryIteration) {
        i != e; i.increment(ec)) {
     ASSERT_NO_ERROR(ec);
 
-    fs::file_status status;
-    if (i->status(status) ==
+    ErrorOr<fs::basic_file_status> status = i->status();
+    if (status.getError() ==
         std::make_error_code(std::errc::no_such_file_or_directory)) {
       i.no_push();
       continue;

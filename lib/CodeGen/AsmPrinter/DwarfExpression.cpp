@@ -15,9 +15,9 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/BinaryFormat/Dwarf.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Target/TargetRegisterInfo.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -130,6 +130,8 @@ bool DwarfExpression::addMachineReg(const TargetRegisterInfo &TRI,
     unsigned Size = TRI.getSubRegIdxSize(Idx);
     unsigned Offset = TRI.getSubRegIdxOffset(Idx);
     Reg = TRI.getDwarfRegNum(*SR, false);
+    if (Reg < 0)
+      continue;
 
     // Intersection between the bits we already emitted and the bits
     // covered by this subregister.
@@ -138,7 +140,7 @@ bool DwarfExpression::addMachineReg(const TargetRegisterInfo &TRI,
 
     // If this sub-register has a DWARF number and we haven't covered
     // its range, emit a DWARF piece for it.
-    if (Reg >= 0 && CurSubReg.test(Coverage)) {
+    if (CurSubReg.test(Coverage)) {
       // Emit a piece for any gap in the coverage.
       if (Offset > CurPos)
         DwarfRegs.push_back({-1, Offset - CurPos, nullptr});

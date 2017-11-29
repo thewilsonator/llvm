@@ -67,15 +67,21 @@ MCStreamer *createAsmStreamer(MCContext &Ctx,
                               MCAsmBackend *TAB, bool ShowInst);
 
 /// Takes ownership of \p TAB and \p CE.
-MCStreamer *createELFStreamer(MCContext &Ctx, MCAsmBackend &TAB,
-                              raw_pwrite_stream &OS, MCCodeEmitter *CE,
+MCStreamer *createELFStreamer(MCContext &Ctx,
+                              std::unique_ptr<MCAsmBackend> &&TAB,
+                              raw_pwrite_stream &OS,
+                              std::unique_ptr<MCCodeEmitter> &&CE,
                               bool RelaxAll);
-MCStreamer *createMachOStreamer(MCContext &Ctx, MCAsmBackend &TAB,
-                                raw_pwrite_stream &OS, MCCodeEmitter *CE,
+MCStreamer *createMachOStreamer(MCContext &Ctx,
+                                std::unique_ptr<MCAsmBackend> &&TAB,
+                                raw_pwrite_stream &OS,
+                                std::unique_ptr<MCCodeEmitter> &&CE,
                                 bool RelaxAll, bool DWARFMustBeAtTheEnd,
                                 bool LabelSections = false);
-MCStreamer *createWasmStreamer(MCContext &Ctx, MCAsmBackend &TAB,
-                               raw_pwrite_stream &OS, MCCodeEmitter *CE,
+MCStreamer *createWasmStreamer(MCContext &Ctx,
+                               std::unique_ptr<MCAsmBackend> &&TAB,
+                               raw_pwrite_stream &OS,
+                               std::unique_ptr<MCCodeEmitter> &&CE,
                                bool RelaxAll);
 
 MCRelocationInfo *createMCRelocationInfo(const Triple &TT, MCContext &Ctx);
@@ -134,26 +140,26 @@ public:
   using MCCodeEmitterCtorTy = MCCodeEmitter *(*)(const MCInstrInfo &II,
                                                  const MCRegisterInfo &MRI,
                                                  MCContext &Ctx);
-  using ELFStreamerCtorTy = MCStreamer *(*)(const Triple &T, MCContext &Ctx,
-                                            MCAsmBackend &TAB,
-                                            raw_pwrite_stream &OS,
-                                            MCCodeEmitter *Emitter,
-                                            bool RelaxAll);
-  using MachOStreamerCtorTy = MCStreamer *(*)(MCContext &Ctx, MCAsmBackend &TAB,
-                                              raw_pwrite_stream &OS,
-                                              MCCodeEmitter *Emitter,
-                                              bool RelaxAll,
-                                              bool DWARFMustBeAtTheEnd);
-  using COFFStreamerCtorTy = MCStreamer *(*)(MCContext &Ctx, MCAsmBackend &TAB,
-                                             raw_pwrite_stream &OS,
-                                             MCCodeEmitter *Emitter,
-                                             bool RelaxAll,
-                                             bool IncrementalLinkerCompatible);
-  using WasmStreamerCtorTy = MCStreamer *(*)(const Triple &T, MCContext &Ctx,
-                                             MCAsmBackend &TAB,
-                                             raw_pwrite_stream &OS,
-                                             MCCodeEmitter *Emitter,
-                                             bool RelaxAll);
+  using ELFStreamerCtorTy =
+      MCStreamer *(*)(const Triple &T, MCContext &Ctx,
+                      std::unique_ptr<MCAsmBackend> &&TAB,
+                      raw_pwrite_stream &OS,
+                      std::unique_ptr<MCCodeEmitter> &&Emitter, bool RelaxAll);
+  using MachOStreamerCtorTy =
+      MCStreamer *(*)(MCContext &Ctx, std::unique_ptr<MCAsmBackend> &&TAB,
+                      raw_pwrite_stream &OS,
+                      std::unique_ptr<MCCodeEmitter> &&Emitter, bool RelaxAll,
+                      bool DWARFMustBeAtTheEnd);
+  using COFFStreamerCtorTy =
+      MCStreamer *(*)(MCContext &Ctx, std::unique_ptr<MCAsmBackend> &&TAB,
+                      raw_pwrite_stream &OS,
+                      std::unique_ptr<MCCodeEmitter> &&Emitter, bool RelaxAll,
+                      bool IncrementalLinkerCompatible);
+  using WasmStreamerCtorTy =
+      MCStreamer *(*)(const Triple &T, MCContext &Ctx,
+                      std::unique_ptr<MCAsmBackend> &&TAB,
+                      raw_pwrite_stream &OS,
+                      std::unique_ptr<MCCodeEmitter> &&Emitter, bool RelaxAll);
   using NullTargetStreamerCtorTy = MCTargetStreamer *(*)(MCStreamer &S);
   using AsmTargetStreamerCtorTy = MCTargetStreamer *(*)(
       MCStreamer &S, formatted_raw_ostream &OS, MCInstPrinter *InstPrint,
@@ -180,6 +186,10 @@ private:
 
   /// ShortDesc - A short description of the target.
   const char *ShortDesc;
+
+  /// BackendName - The name of the backend implementation. This must match the
+  /// name of the 'def X : Target ...' in TableGen.
+  const char *BackendName;
 
   /// HasJIT - Whether this target supports the JIT.
   bool HasJIT;
@@ -272,6 +282,9 @@ public:
 
   /// getShortDescription - Get a short description of the target.
   const char *getShortDescription() const { return ShortDesc; }
+
+  /// getBackendName - Get the backend name.
+  const char *getBackendName() const { return BackendName; }
 
   /// @}
   /// @name Feature Predicates
@@ -435,8 +448,9 @@ public:
   /// \param Emitter The target independent assembler object.Takes ownership.
   /// \param RelaxAll Relax all fixups?
   MCStreamer *createMCObjectStreamer(const Triple &T, MCContext &Ctx,
-                                     MCAsmBackend &TAB, raw_pwrite_stream &OS,
-                                     MCCodeEmitter *Emitter,
+                                     std::unique_ptr<MCAsmBackend> &&TAB,
+                                     raw_pwrite_stream &OS,
+                                     std::unique_ptr<MCCodeEmitter> &&Emitter,
                                      const MCSubtargetInfo &STI, bool RelaxAll,
                                      bool IncrementalLinkerCompatible,
                                      bool DWARFMustBeAtTheEnd) const {
@@ -446,28 +460,32 @@ public:
       llvm_unreachable("Unknown object format");
     case Triple::COFF:
       assert(T.isOSWindows() && "only Windows COFF is supported");
-      S = COFFStreamerCtorFn(Ctx, TAB, OS, Emitter, RelaxAll,
-                             IncrementalLinkerCompatible);
+      S = COFFStreamerCtorFn(Ctx, std::move(TAB), OS, std::move(Emitter),
+                             RelaxAll, IncrementalLinkerCompatible);
       break;
     case Triple::MachO:
       if (MachOStreamerCtorFn)
-        S = MachOStreamerCtorFn(Ctx, TAB, OS, Emitter, RelaxAll,
-                                DWARFMustBeAtTheEnd);
+        S = MachOStreamerCtorFn(Ctx, std::move(TAB), OS, std::move(Emitter),
+                                RelaxAll, DWARFMustBeAtTheEnd);
       else
-        S = createMachOStreamer(Ctx, TAB, OS, Emitter, RelaxAll,
-                                DWARFMustBeAtTheEnd);
+        S = createMachOStreamer(Ctx, std::move(TAB), OS, std::move(Emitter),
+                                RelaxAll, DWARFMustBeAtTheEnd);
       break;
     case Triple::ELF:
       if (ELFStreamerCtorFn)
-        S = ELFStreamerCtorFn(T, Ctx, TAB, OS, Emitter, RelaxAll);
+        S = ELFStreamerCtorFn(T, Ctx, std::move(TAB), OS, std::move(Emitter),
+                              RelaxAll);
       else
-        S = createELFStreamer(Ctx, TAB, OS, Emitter, RelaxAll);
+        S = createELFStreamer(Ctx, std::move(TAB), OS, std::move(Emitter),
+                              RelaxAll);
       break;
     case Triple::Wasm:
       if (WasmStreamerCtorFn)
-        S = WasmStreamerCtorFn(T, Ctx, TAB, OS, Emitter, RelaxAll);
+        S = WasmStreamerCtorFn(T, Ctx, std::move(TAB), OS, std::move(Emitter),
+                               RelaxAll);
       else
-        S = createWasmStreamer(Ctx, TAB, OS, Emitter, RelaxAll);
+        S = createWasmStreamer(Ctx, std::move(TAB), OS, std::move(Emitter),
+                               RelaxAll);
       break;
     }
     if (ObjectTargetStreamerCtorFn)
@@ -634,10 +652,15 @@ struct TargetRegistry {
   /// @param Name - The target name. This should be a static string.
   /// @param ShortDesc - A short target description. This should be a static
   /// string.
+  /// @param BackendName - The name of the backend. This should be a static
+  /// string that is the same for all targets that share a backend
+  /// implementation and must match the name used in the 'def X : Target ...' in
+  /// TableGen.
   /// @param ArchMatchFn - The arch match checking function for this target.
   /// @param HasJIT - Whether the target supports JIT code
   /// generation.
   static void RegisterTarget(Target &T, const char *Name, const char *ShortDesc,
+                             const char *BackendName,
                              Target::ArchMatchFnTy ArchMatchFn,
                              bool HasJIT = false);
 
@@ -867,13 +890,15 @@ struct TargetRegistry {
 /// }
 /// extern "C" void LLVMInitializeFooTargetInfo() {
 ///   RegisterTarget<Triple::foo> X(getTheFooTarget(), "foo", "Foo
-///   description");
+///   description", "Foo" /* Backend Name */);
 /// }
 template <Triple::ArchType TargetArchType = Triple::UnknownArch,
           bool HasJIT = false>
 struct RegisterTarget {
-  RegisterTarget(Target &T, const char *Name, const char *Desc) {
-    TargetRegistry::RegisterTarget(T, Name, Desc, &getArchMatch, HasJIT);
+  RegisterTarget(Target &T, const char *Name, const char *Desc,
+                 const char *BackendName) {
+    TargetRegistry::RegisterTarget(T, Name, Desc, BackendName, &getArchMatch,
+                                   HasJIT);
   }
 
   static bool getArchMatch(Triple::ArchType Arch) {

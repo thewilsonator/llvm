@@ -335,31 +335,33 @@ enum {
 
 // OS ABI identification.
 enum {
-  ELFOSABI_NONE = 0,          // UNIX System V ABI
-  ELFOSABI_HPUX = 1,          // HP-UX operating system
-  ELFOSABI_NETBSD = 2,        // NetBSD
-  ELFOSABI_GNU = 3,           // GNU/Linux
-  ELFOSABI_LINUX = 3,         // Historical alias for ELFOSABI_GNU.
-  ELFOSABI_HURD = 4,          // GNU/Hurd
-  ELFOSABI_SOLARIS = 6,       // Solaris
-  ELFOSABI_AIX = 7,           // AIX
-  ELFOSABI_IRIX = 8,          // IRIX
-  ELFOSABI_FREEBSD = 9,       // FreeBSD
-  ELFOSABI_TRU64 = 10,        // TRU64 UNIX
-  ELFOSABI_MODESTO = 11,      // Novell Modesto
-  ELFOSABI_OPENBSD = 12,      // OpenBSD
-  ELFOSABI_OPENVMS = 13,      // OpenVMS
-  ELFOSABI_NSK = 14,          // Hewlett-Packard Non-Stop Kernel
-  ELFOSABI_AROS = 15,         // AROS
-  ELFOSABI_FENIXOS = 16,      // FenixOS
-  ELFOSABI_CLOUDABI = 17,     // Nuxi CloudABI
-  ELFOSABI_FIRST_ARCH = 64,   // First architecture-specific OS ABI
-  ELFOSABI_AMDGPU_HSA = 64,   // AMD HSA runtime
-  ELFOSABI_C6000_ELFABI = 64, // Bare-metal TMS320C6000
-  ELFOSABI_C6000_LINUX = 65,  // Linux TMS320C6000
-  ELFOSABI_ARM = 97,          // ARM
-  ELFOSABI_STANDALONE = 255,  // Standalone (embedded) application
-  ELFOSABI_LAST_ARCH = 255    // Last Architecture-specific OS ABI
+  ELFOSABI_NONE = 0,           // UNIX System V ABI
+  ELFOSABI_HPUX = 1,           // HP-UX operating system
+  ELFOSABI_NETBSD = 2,         // NetBSD
+  ELFOSABI_GNU = 3,            // GNU/Linux
+  ELFOSABI_LINUX = 3,          // Historical alias for ELFOSABI_GNU.
+  ELFOSABI_HURD = 4,           // GNU/Hurd
+  ELFOSABI_SOLARIS = 6,        // Solaris
+  ELFOSABI_AIX = 7,            // AIX
+  ELFOSABI_IRIX = 8,           // IRIX
+  ELFOSABI_FREEBSD = 9,        // FreeBSD
+  ELFOSABI_TRU64 = 10,         // TRU64 UNIX
+  ELFOSABI_MODESTO = 11,       // Novell Modesto
+  ELFOSABI_OPENBSD = 12,       // OpenBSD
+  ELFOSABI_OPENVMS = 13,       // OpenVMS
+  ELFOSABI_NSK = 14,           // Hewlett-Packard Non-Stop Kernel
+  ELFOSABI_AROS = 15,          // AROS
+  ELFOSABI_FENIXOS = 16,       // FenixOS
+  ELFOSABI_CLOUDABI = 17,      // Nuxi CloudABI
+  ELFOSABI_FIRST_ARCH = 64,    // First architecture-specific OS ABI
+  ELFOSABI_AMDGPU_HSA = 64,    // AMD HSA runtime
+  ELFOSABI_AMDGPU_PAL = 65,    // AMD PAL runtime
+  ELFOSABI_AMDGPU_MESA3D = 66, // AMD GCN GPUs (GFX6+) for MESA runtime
+  ELFOSABI_ARM = 97,           // ARM
+  ELFOSABI_C6000_ELFABI = 64,  // Bare-metal TMS320C6000
+  ELFOSABI_C6000_LINUX = 65,   // Linux TMS320C6000
+  ELFOSABI_STANDALONE = 255,   // Standalone (embedded) application
+  ELFOSABI_LAST_ARCH = 255     // Last Architecture-specific OS ABI
 };
 
 #define ELF_RELOC(name, value) name = value,
@@ -645,6 +647,15 @@ enum {
 #include "ELFRelocs/WebAssembly.def"
 };
 
+// AMDGPU specific e_flags.
+enum : unsigned {
+  // AMDGPU machine architectures.
+  EF_AMDGPU_ARCH_NONE = 0x00000000, // None/unknown.
+  EF_AMDGPU_ARCH_R600 = 0x00000001, // AMD HD2XXX-HD6XXX GPUs.
+  EF_AMDGPU_ARCH_GCN = 0x00000002,  // AMD GCN GFX6+ GPUs.
+  EF_AMDGPU_ARCH = 0x0000000f       // EF_AMDGPU_ARCH_XXX selection mask.
+};
+
 // ELF Relocation types for AMDGPU
 enum {
 #include "ELFRelocs/AMDGPU.def"
@@ -719,6 +730,10 @@ enum : unsigned {
   SHT_GROUP = 17,                  // Section group.
   SHT_SYMTAB_SHNDX = 18,           // Indices for SHN_XINDEX entries.
   SHT_LOOS = 0x60000000,           // Lowest operating system-specific type.
+  // Android packed relocation section types.
+  // https://android.googlesource.com/platform/bionic/+/6f12bfece5dcc01325e0abba56a46b1bcf991c69/tools/relocation_packer/src/elf_file.cc#37
+  SHT_ANDROID_REL = 0x60000001,
+  SHT_ANDROID_RELA = 0x60000002,
   SHT_LLVM_ODRTAB = 0x6fff4c00,    // LLVM ODR table.
   SHT_GNU_ATTRIBUTES = 0x6ffffff5, // Object attributes.
   SHT_GNU_HASH = 0x6ffffff6,       // GNU-style hash table.
@@ -1155,6 +1170,13 @@ enum {
   DT_LOPROC = 0x70000000, // Start of processor specific tags.
   DT_HIPROC = 0x7FFFFFFF, // End of processor specific tags.
 
+  // Android packed relocation section tags.
+  // https://android.googlesource.com/platform/bionic/+/6f12bfece5dcc01325e0abba56a46b1bcf991c69/tools/relocation_packer/src/elf_file.cc#31
+  DT_ANDROID_REL = 0x6000000F,
+  DT_ANDROID_RELSZ = 0x60000010,
+  DT_ANDROID_RELA = 0x60000011,
+  DT_ANDROID_RELASZ = 0x60000012,
+
   DT_GNU_HASH = 0x6FFFFEF5, // Reference to the GNU hash table.
   DT_TLSDESC_PLT =
       0x6FFFFEF6, // Location of PLT entry for TLS descriptor resolver calls.
@@ -1358,6 +1380,14 @@ enum {
   NT_GNU_GOLD_VERSION = 4,
 };
 
+// AMDGPU specific notes.
+enum {
+  // Note types with values between 0 and 9 (inclusive) are reserved.
+  NT_AMD_AMDGPU_HSA_METADATA = 10,
+  NT_AMD_AMDGPU_ISA = 11,
+  NT_AMD_AMDGPU_PAL_METADATA = 12
+};
+
 enum {
   GNU_ABI_TAG_LINUX = 0,
   GNU_ABI_TAG_HURD = 1,
@@ -1366,6 +1396,14 @@ enum {
   GNU_ABI_TAG_NETBSD = 4,
   GNU_ABI_TAG_SYLLABLE = 5,
   GNU_ABI_TAG_NACL = 6,
+};
+
+// Android packed relocation group flags.
+enum {
+  RELOCATION_GROUPED_BY_INFO_FLAG = 1,
+  RELOCATION_GROUPED_BY_OFFSET_DELTA_FLAG = 2,
+  RELOCATION_GROUPED_BY_ADDEND_FLAG = 4,
+  RELOCATION_GROUP_HAS_ADDEND_FLAG = 8,
 };
 
 // Compressed section header for ELF32.

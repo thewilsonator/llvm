@@ -180,6 +180,11 @@ bool TargetTransformInfo::hasDivRemOp(Type *DataType, bool IsSigned) const {
   return TTIImpl->hasDivRemOp(DataType, IsSigned);
 }
 
+bool TargetTransformInfo::hasVolatileVariant(Instruction *I,
+                                             unsigned AddrSpace) const {
+  return TTIImpl->hasVolatileVariant(I, AddrSpace);
+}
+
 bool TargetTransformInfo::prefersVectorizedAddressing() const {
   return TTIImpl->prefersVectorizedAddressing();
 }
@@ -245,8 +250,9 @@ bool TargetTransformInfo::enableAggressiveInterleaving(bool LoopHasReductions) c
   return TTIImpl->enableAggressiveInterleaving(LoopHasReductions);
 }
 
-bool TargetTransformInfo::enableMemCmpExpansion(unsigned &MaxLoadSize) const {
-  return TTIImpl->enableMemCmpExpansion(MaxLoadSize);
+const TargetTransformInfo::MemCmpExpansionOptions *
+TargetTransformInfo::enableMemCmpExpansion(bool IsZeroCmp) const {
+  return TTIImpl->enableMemCmpExpansion(IsZeroCmp);
 }
 
 bool TargetTransformInfo::enableInterleavedAccessVectorization() const {
@@ -273,6 +279,10 @@ TargetTransformInfo::getPopcntSupport(unsigned IntTyWidthInBit) const {
 
 bool TargetTransformInfo::haveFastSqrt(Type *Ty) const {
   return TTIImpl->haveFastSqrt(Ty);
+}
+
+bool TargetTransformInfo::isFCmpOrdCheaperThanFCmpZero(Type *Ty) const {
+  return TTIImpl->isFCmpOrdCheaperThanFCmpZero(Ty);
 }
 
 int TargetTransformInfo::getFPOpCost(Type *Ty) const {

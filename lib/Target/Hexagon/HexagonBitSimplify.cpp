@@ -26,6 +26,7 @@
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/MC/MCInstrDesc.h"
 #include "llvm/Pass.h"
@@ -35,7 +36,6 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetRegisterInfo.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -173,7 +173,7 @@ namespace {
   raw_ostream &operator<< (raw_ostream &OS, const PrintRegSet &P) {
     OS << '{';
     for (unsigned R = P.RS.find_first(); R; R = P.RS.find_next(R))
-      OS << ' ' << PrintReg(R, P.TRI);
+      OS << ' ' << printReg(R, P.TRI);
     OS << " }";
     return OS;
   }
@@ -1315,7 +1315,7 @@ bool RedundantInstrElimination::processBlock(MachineBasicBlock &B,
 
     if (MI->getOpcode() == TargetOpcode::COPY)
       continue;
-    if (MI->hasUnmodeledSideEffects() || MI->isInlineAsm())
+    if (MI->isPHI() || MI->hasUnmodeledSideEffects() || MI->isInlineAsm())
       continue;
     unsigned NumD = MI->getDesc().getNumDefs();
     if (NumD != 1)
@@ -1325,8 +1325,7 @@ bool RedundantInstrElimination::processBlock(MachineBasicBlock &B,
     if (!BT.has(RD.Reg))
       continue;
     const BitTracker::RegisterCell &DC = BT.lookup(RD.Reg);
-    auto At = MI->isPHI() ? B.getFirstNonPHI()
-                          : MachineBasicBlock::iterator(MI);
+    auto At = MachineBasicBlock::iterator(MI);
 
     // Find a source operand that is equal to the result.
     for (auto &Op : MI->uses()) {
@@ -2454,7 +2453,7 @@ bool BitSimplification::simplifyExtractLow(MachineInstr *MI,
     return false;
 
   DEBUG({
-    dbgs() << __func__ << " on reg: " << PrintReg(RD.Reg, &HRI, RD.Sub)
+    dbgs() << __func__ << " on reg: " << printReg(RD.Reg, &HRI, RD.Sub)
            << ", MI: " << *MI;
     dbgs() << "Cell: " << RC << '\n';
     dbgs() << "Expected bitfield size: " << Len << " bits, "
@@ -3005,9 +3004,9 @@ bool HexagonLoopRescheduling::processLoop(LoopCand &C) {
   DEBUG({
     dbgs() << "Phis: {";
     for (auto &I : Phis) {
-      dbgs() << ' ' << PrintReg(I.DefR, HRI) << "=phi("
-             << PrintReg(I.PR.Reg, HRI, I.PR.Sub) << ":b" << I.PB->getNumber()
-             << ',' << PrintReg(I.LR.Reg, HRI, I.LR.Sub) << ":b"
+      dbgs() << ' ' << printReg(I.DefR, HRI) << "=phi("
+             << printReg(I.PR.Reg, HRI, I.PR.Sub) << ":b" << I.PB->getNumber()
+             << ',' << printReg(I.LR.Reg, HRI, I.LR.Sub) << ":b"
              << I.LB->getNumber() << ')';
     }
     dbgs() << " }\n";
@@ -3127,8 +3126,8 @@ bool HexagonLoopRescheduling::processLoop(LoopCand &C) {
     for (unsigned i = 0, n = Groups.size(); i < n; ++i) {
       InstrGroup &G = Groups[i];
       dbgs() << "Group[" << i << "] inp: "
-             << PrintReg(G.Inp.Reg, HRI, G.Inp.Sub)
-             << "  out: " << PrintReg(G.Out.Reg, HRI, G.Out.Sub) << "\n";
+             << printReg(G.Inp.Reg, HRI, G.Inp.Sub)
+             << "  out: " << printReg(G.Out.Reg, HRI, G.Out.Sub) << "\n";
       for (unsigned j = 0, m = G.Ins.size(); j < m; ++j)
         dbgs() << "  " << *G.Ins[j];
     }

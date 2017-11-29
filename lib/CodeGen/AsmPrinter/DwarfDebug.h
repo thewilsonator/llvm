@@ -138,30 +138,7 @@ public:
   /// Get the FI entries, sorted by fragment offset.
   ArrayRef<FrameIndexExpr> getFrameIndexExprs() const;
   bool hasFrameIndexExprs() const { return !FrameIndexExprs.empty(); }
-
-  void addMMIEntry(const DbgVariable &V) {
-    assert(DebugLocListIndex == ~0U && !MInsn && "not an MMI entry");
-    assert(V.DebugLocListIndex == ~0U && !V.MInsn && "not an MMI entry");
-    assert(V.Var == Var && "conflicting variable");
-    assert(V.IA == IA && "conflicting inlined-at location");
-
-    assert(!FrameIndexExprs.empty() && "Expected an MMI entry");
-    assert(!V.FrameIndexExprs.empty() && "Expected an MMI entry");
-
-    if (FrameIndexExprs.size()) {
-      auto *Expr = FrameIndexExprs.back().Expr;
-      // Get rid of duplicate non-fragment entries. More than one non-fragment
-      // dbg.declare makes no sense so ignore all but the first.
-      if (!Expr || !Expr->isFragment())
-        return;
-    }
-    FrameIndexExprs.append(V.FrameIndexExprs.begin(), V.FrameIndexExprs.end());
-    assert(llvm::all_of(FrameIndexExprs,
-                        [](FrameIndexExpr &FIE) {
-                          return FIE.Expr && FIE.Expr->isFragment();
-                        }) &&
-           "conflicting locations for variable");
-  }
+  void addMMIEntry(const DbgVariable &V);
 
   // Translate tag to proper Dwarf tag.
   dwarf::Tag getTag() const {
@@ -299,7 +276,7 @@ class DwarfDebug : public DebugHandlerBase {
   // 0, referencing the comp_dir of all the type units that use it.
   MCDwarfDwoLineTable SplitTypeUnitFileTable;
   /// @}
-  
+
   /// True iff there are multiple CUs in this module.
   bool SingleCU;
   bool IsDarwin;
@@ -557,6 +534,9 @@ public:
   /// A helper function to check whether the DIE for a given Scope is
   /// going to be null.
   bool isLexicalScopeDIENull(LexicalScope *Scope);
+
+  /// Find the matching DwarfCompileUnit for the given CU DIE.
+  DwarfCompileUnit *lookupCU(const DIE *Die) { return CUDieMap.lookup(Die); }
 
   /// \defgroup DebuggerTuning Predicates to tune DWARF for a given debugger.
   ///

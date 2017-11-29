@@ -16,6 +16,10 @@
 #include "llvm/ADT/Triple.h"
 #include "llvm/Analysis/ObjectUtils.h"
 #include "llvm/Bitcode/BitcodeReader.h"
+#include "llvm/CodeGen/TargetLowering.h"
+#include "llvm/CodeGen/TargetLoweringObjectFile.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/LLVMContext.h"
@@ -40,10 +44,6 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
-#include "llvm/Target/TargetLowering.h"
-#include "llvm/Target/TargetLoweringObjectFile.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 #include "llvm/Transforms/Utils/GlobalStatus.h"
 #include <system_error>
 using namespace llvm;
@@ -60,9 +60,13 @@ LTOModule::~LTOModule() {}
 /// isBitcodeFile - Returns 'true' if the file (or memory contents) is LLVM
 /// bitcode.
 bool LTOModule::isBitcodeFile(const void *Mem, size_t Length) {
-  ErrorOr<MemoryBufferRef> BCData = IRObjectFile::findBitcodeInMemBuffer(
+  Expected<MemoryBufferRef> BCData = IRObjectFile::findBitcodeInMemBuffer(
       MemoryBufferRef(StringRef((const char *)Mem, Length), "<mem>"));
-  return bool(BCData);
+  if (!BCData) {
+    consumeError(BCData.takeError());
+    return false;
+  }
+  return true;
 }
 
 bool LTOModule::isBitcodeFile(StringRef Path) {
@@ -71,9 +75,13 @@ bool LTOModule::isBitcodeFile(StringRef Path) {
   if (!BufferOrErr)
     return false;
 
-  ErrorOr<MemoryBufferRef> BCData = IRObjectFile::findBitcodeInMemBuffer(
+  Expected<MemoryBufferRef> BCData = IRObjectFile::findBitcodeInMemBuffer(
       BufferOrErr.get()->getMemBufferRef());
-  return bool(BCData);
+  if (!BCData) {
+    consumeError(BCData.takeError());
+    return false;
+  }
+  return true;
 }
 
 bool LTOModule::isThinLTO() {
@@ -87,10 +95,12 @@ bool LTOModule::isThinLTO() {
 
 bool LTOModule::isBitcodeForTarget(MemoryBuffer *Buffer,
                                    StringRef TriplePrefix) {
-  ErrorOr<MemoryBufferRef> BCOrErr =
+  Expected<MemoryBufferRef> BCOrErr =
       IRObjectFile::findBitcodeInMemBuffer(Buffer->getMemBufferRef());
-  if (!BCOrErr)
+  if (!BCOrErr) {
+    consumeError(BCOrErr.takeError());
     return false;
+  }
   LLVMContext Context;
   ErrorOr<std::string> TripleOrErr =
       expectedToErrorOrAndEmitErrors(Context, getBitcodeTargetTriple(*BCOrErr));
@@ -100,10 +110,12 @@ bool LTOModule::isBitcodeForTarget(MemoryBuffer *Buffer,
 }
 
 std::string LTOModule::getProducerString(MemoryBuffer *Buffer) {
-  ErrorOr<MemoryBufferRef> BCOrErr =
+  Expected<MemoryBufferRef> BCOrErr =
       IRObjectFile::findBitcodeInMemBuffer(Buffer->getMemBufferRef());
-  if (!BCOrErr)
+  if (!BCOrErr) {
+    consumeError(BCOrErr.takeError());
     return "";
+  }
   LLVMContext Context;
   ErrorOr<std::string> ProducerOrErr = expectedToErrorOrAndEmitErrors(
       Context, getBitcodeProducerString(*BCOrErr));
@@ -174,11 +186,11 @@ LTOModule::createInLocalContext(std::unique_ptr<LLVMContext> Context,
 static ErrorOr<std::unique_ptr<Module>>
 parseBitcodeFileImpl(MemoryBufferRef Buffer, LLVMContext &Context,
                      bool ShouldBeLazy) {
-
   // Find the buffer.
-  ErrorOr<MemoryBufferRef> MBOrErr =
+  Expected<MemoryBufferRef> MBOrErr =
       IRObjectFile::findBitcodeInMemBuffer(Buffer);
-  if (std::error_code EC = MBOrErr.getError()) {
+  if (Error E = MBOrErr.takeError()) {
+    std::error_code EC = errorToErrorCode(std::move(E));
     Context.emitError(EC.message());
     return EC;
   }

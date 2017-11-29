@@ -36,6 +36,8 @@
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/ScheduleDAG.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/MC/MCInstrDesc.h"
 #include "llvm/Pass.h"
@@ -43,8 +45,6 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 #include <cassert>
 #include <cstdint>
 #include <iterator>
@@ -496,6 +496,48 @@ void HexagonPacketizerList::useCalleesSP(MachineInstr &MI) {
   Off.setImm(Off.getImm() + FrameSize + HEXAGON_LRFP_SIZE);
 }
 
+/// Return true if we can update the offset in MI so that MI and MJ
+/// can be packetized together.
+bool HexagonPacketizerList::updateOffset(SUnit *SUI, SUnit *SUJ) {
+  assert(SUI->getInstr() && SUJ->getInstr());
+  MachineInstr &MI = *SUI->getInstr();
+  MachineInstr &MJ = *SUJ->getInstr();
+
+  unsigned BPI, OPI;
+  if (!HII->getBaseAndOffsetPosition(MI, BPI, OPI))
+    return false;
+  unsigned BPJ, OPJ;
+  if (!HII->getBaseAndOffsetPosition(MJ, BPJ, OPJ))
+    return false;
+  unsigned Reg = MI.getOperand(BPI).getReg();
+  if (Reg != MJ.getOperand(BPJ).getReg())
+    return false;
+  // Make sure that the dependences do not restrict adding MI to the packet.
+  // That is, ignore anti dependences, and make sure the only data dependence
+  // involves the specific register.
+  for (const auto &PI : SUI->Preds)
+    if (PI.getKind() != SDep::Anti &&
+        (PI.getKind() != SDep::Data || PI.getReg() != Reg))
+      return false;
+  int Incr;
+  if (!HII->getIncrementValue(MJ, Incr))
+    return false;
+
+  int64_t Offset = MI.getOperand(OPI).getImm();
+  MI.getOperand(OPI).setImm(Offset + Incr);
+  ChangedOffset = Offset;
+  return true;
+}
+
+/// Undo the changed offset. This is needed if the instruction cannot be
+/// added to the current packet due to a different instruction.
+void HexagonPacketizerList::undoChangedOffset(MachineInstr &MI) {
+  unsigned BP, OP;
+  if (!HII->getBaseAndOffsetPosition(MI, BP, OP))
+    llvm_unreachable("Unable to find base and offset operands.");
+  MI.getOperand(OP).setImm(ChangedOffset);
+}
+
 enum PredicateKind {
   PK_False,
   PK_True,
@@ -730,8 +772,8 @@ bool HexagonPacketizerList::canPromoteToNewValueStore(const MachineInstr &MI,
 
   // If data definition is because of implicit definition of the register,
   // do not newify the store. Eg.
-  // %R9<def> = ZXTH %R12, %D6<imp-use>, %R12<imp-def>
-  // S2_storerh_io %R8, 2, %R12<kill>; mem:ST2[%scevgep343]
+  // %r9<def> = ZXTH %r12, %d6<imp-use>, %r12<imp-def>
+  // S2_storerh_io %r8, 2, %r12<kill>; mem:ST2[%scevgep343]
   for (auto &MO : PacketMI.operands()) {
     if (MO.isRegMask() && MO.clobbersPhysReg(DepReg))
       return false;
@@ -745,8 +787,8 @@ bool HexagonPacketizerList::canPromoteToNewValueStore(const MachineInstr &MI,
   // Handle imp-use of super reg case. There is a target independent side
   // change that should prevent this situation but I am handling it for
   // just-in-case. For example, we cannot newify R2 in the following case:
-  // %R3<def> = A2_tfrsi 0;
-  // S2_storeri_io %R0<kill>, 0, %R2<kill>, %D1<imp-use,kill>;
+  // %r3<def> = A2_tfrsi 0;
+  // S2_storeri_io %r0<kill>, 0, %r2<kill>, %d1<imp-use,kill>;
   for (auto &MO : MI.operands()) {
     if (MO.isReg() && MO.isUse() && MO.isImplicit() && MO.getReg() == DepReg)
       return false;
@@ -850,12 +892,12 @@ bool HexagonPacketizerList::canPromoteToDotNew(const MachineInstr &MI,
 // Go through the packet instructions and search for an anti dependency between
 // them and DepReg from MI. Consider this case:
 // Trying to add
-// a) %R1<def> = TFRI_cdNotPt %P3, 2
+// a) %r1<def> = TFRI_cdNotPt %p3, 2
 // to this packet:
 // {
-//   b) %P0<def> = C2_or %P3<kill>, %P0<kill>
-//   c) %P3<def> = C2_tfrrp %R23
-//   d) %R1<def> = C2_cmovenewit %P3, 4
+//   b) %p0<def> = C2_or %p3<kill>, %p0<kill>
+//   c) %p3<def> = C2_tfrrp %r23
+//   d) %r1<def> = C2_cmovenewit %p3, 4
 //  }
 // The P3 from a) and d) will be complements after
 // a)'s P3 is converted to .new form
@@ -920,11 +962,11 @@ bool HexagonPacketizerList::arePredicatesComplements(MachineInstr &MI1,
 
   // One corner case deals with the following scenario:
   // Trying to add
-  // a) %R24<def> = A2_tfrt %P0, %R25
+  // a) %r24<def> = A2_tfrt %p0, %r25
   // to this packet:
   // {
-  //   b) %R25<def> = A2_tfrf %P0, %R24
-  //   c) %P0<def> = C2_cmpeqi %R26, 1
+  //   b) %r25<def> = A2_tfrf %p0, %r24
+  //   c) %p0<def> = C2_cmpeqi %r26, 1
   // }
   //
   // On general check a) and b) are complements, but presence of c) will
@@ -980,6 +1022,7 @@ void HexagonPacketizerList::initPacketizerState() {
   GlueToNewValueJump = false;
   GlueAllocframeStore = false;
   FoundSequentialDependence = false;
+  ChangedOffset = INT64_MAX;
 }
 
 // Ignore bundling of pseudo instructions.
@@ -1295,11 +1338,9 @@ bool HexagonPacketizerList::isLegalToPacketizeTogether(SUnit *SUI, SUnit *SUJ) {
     if (NOp1.isReg() && I.getOperand(0).getReg() == NOp1.getReg())
       secondRegMatch = true;
 
-    for (auto T : CurrentPacketMIs) {
-      SUnit *PacketSU = MIToSUnit.find(T)->second;
-      MachineInstr &PI = *PacketSU->getInstr();
+    for (MachineInstr *PI : CurrentPacketMIs) {
       // NVJ can not be part of the dual jump - Arch Spec: section 7.8.
-      if (PI.isCall()) {
+      if (PI->isCall()) {
         Dependence = true;
         break;
       }
@@ -1311,22 +1352,22 @@ bool HexagonPacketizerList::isLegalToPacketizeTogether(SUnit *SUI, SUnit *SUJ) {
       // 3. If the second operand of the nvj is newified, (which means
       //    first operand is also a reg), first reg is not defined in
       //    the same packet.
-      if (PI.getOpcode() == Hexagon::S2_allocframe || PI.mayStore() ||
-          HII->isLoopN(PI)) {
+      if (PI->getOpcode() == Hexagon::S2_allocframe || PI->mayStore() ||
+          HII->isLoopN(*PI)) {
         Dependence = true;
         break;
       }
       // Check #2/#3.
       const MachineOperand &OpR = secondRegMatch ? NOp0 : NOp1;
-      if (OpR.isReg() && PI.modifiesRegister(OpR.getReg(), HRI)) {
+      if (OpR.isReg() && PI->modifiesRegister(OpR.getReg(), HRI)) {
         Dependence = true;
         break;
       }
     }
 
+    GlueToNewValueJump = true;
     if (Dependence)
       return false;
-    GlueToNewValueJump = true;
   }
 
   // There no dependency between a prolog instruction and its successor.
@@ -1458,7 +1499,7 @@ bool HexagonPacketizerList::isLegalToPacketizeTogether(SUnit *SUI, SUnit *SUJ) {
       if (StoreJ) {
         // Two stores are only allowed on V4+. Load following store is never
         // allowed.
-        if (LoadI) {
+        if (LoadI && alias(J, I)) {
           FoundSequentialDependence = true;
           break;
         }
@@ -1502,7 +1543,7 @@ bool HexagonPacketizerList::isLegalToPacketizeTogether(SUnit *SUI, SUnit *SUJ) {
 
     // There are certain anti-dependencies that cannot be ignored.
     // Specifically:
-    //   J2_call ... %R0<imp-def>   ; SUJ
+    //   J2_call ... %r0<imp-def>   ; SUJ
     //   R0 = ...                   ; SUI
     // Those cannot be packetized together, since the call will observe
     // the effect of the assignment to R0.
@@ -1567,6 +1608,23 @@ bool HexagonPacketizerList::isLegalToPruneDependencies(SUnit *SUI, SUnit *SUJ) {
     useCalleesSP(I);
     GlueAllocframeStore = false;
   }
+
+  if (ChangedOffset != INT64_MAX)
+    undoChangedOffset(I);
+
+  if (GlueToNewValueJump) {
+    // Putting I and J together would prevent the new-value jump from being
+    // packetized with the producer. In that case I and J must be separated.
+    GlueToNewValueJump = false;
+    return false;
+  }
+
+  if (ChangedOffset == INT64_MAX && updateOffset(SUI, SUJ)) {
+    FoundSequentialDependence = false;
+    Dependence = false;
+    return true;
+  }
+
   return false;
 }
 

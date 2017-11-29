@@ -36,6 +36,8 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/CodeGen/MachineOperand.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/DataLayout.h"
@@ -55,8 +57,6 @@
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 #include <cassert>
 #include <cstdint>
 #include <map>
@@ -361,6 +361,7 @@ void MipsAsmPrinter::EmitFunctionEntryLabel() {
   if (Subtarget->inMicroMipsMode()) {
     TS.emitDirectiveSetMicroMips();
     TS.setUsesMicroMips();
+    TS.updateABIInfo(*Subtarget);
   } else
     TS.emitDirectiveSetNoMicroMips();
 
@@ -417,6 +418,7 @@ void MipsAsmPrinter::EmitFunctionBodyEnd() {
 }
 
 void MipsAsmPrinter::EmitBasicBlockEnd(const MachineBasicBlock &MBB) {
+  AsmPrinter::EmitBasicBlockEnd(MBB);
   MipsTargetStreamer &TS = getTargetStreamer();
   if (MBB.empty())
     TS.emitDirectiveInsn();
@@ -1080,16 +1082,16 @@ void MipsAsmPrinter::EmitSled(const MachineInstr &MI, SledKind Kind) {
   // be patching over the full 48 bytes (12 instructions) with the following
   // pattern:
   //
-  //   ADDIU	SP, SP, -8
+  //   ADDIU    SP, SP, -8
   //   NOP
-  //   SW	RA, 4(SP)
+  //   SW       RA, 4(SP)
   //   SW       T9, 0(SP)
   //   LUI      T9, %hi(__xray_FunctionEntry/Exit)
   //   ORI      T9, T9, %lo(__xray_FunctionEntry/Exit)
   //   LUI      T0, %hi(function_id)
-  //   JALR	T9
-  //   ORI	T0, T0, %lo(function_id)
-  //   LW	T9, 0(SP)
+  //   JALR     T9
+  //   ORI      T0, T0, %lo(function_id)
+  //   LW       T9, 0(SP)
   //   LW       RA, 4(SP)
   //   ADDIU    SP, SP, 8
   //

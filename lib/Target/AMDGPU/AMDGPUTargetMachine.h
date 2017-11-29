@@ -41,6 +41,8 @@ protected:
   StringRef getFeatureString(const Function &F) const;
 
 public:
+  static bool EnableLateStructurizeCFG;
+
   AMDGPUTargetMachine(const Target &T, const Triple &TT, StringRef CPU,
                       StringRef FS, TargetOptions Options,
                       Optional<Reloc::Model> RM, Optional<CodeModel::Model> CM,
@@ -111,6 +113,10 @@ public:
   TargetPassConfig *createPassConfig(PassManagerBase &PM) override;
 
   const SISubtarget *getSubtargetImpl(const Function &) const override;
+
+  bool useIPRA() const override {
+    return true;
+  }
 };
 
 } // end namespace llvm

@@ -17,6 +17,7 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/None.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
@@ -62,6 +63,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#define DEBUG_TYPE "asm-parser"
 
 using namespace llvm;
 
@@ -162,7 +165,6 @@ public:
 };
 
 class ARMAsmParser : public MCTargetAsmParser {
-  const MCInstrInfo &MII;
   const MCRegisterInfo *MRI;
   UnwindContext UC;
 
@@ -558,6 +560,7 @@ class ARMAsmParser : public MCTargetAsmParser {
   bool shouldOmitCCOutOperand(StringRef Mnemonic, OperandVector &Operands);
   bool shouldOmitPredicateOperand(StringRef Mnemonic, OperandVector &Operands);
   bool isITBlockTerminator(MCInst &Inst) const;
+  void fixupGNULDRDAlias(StringRef Mnemonic, OperandVector &Operands);
 
 public:
   enum ARMMatchResultTy {
@@ -574,7 +577,7 @@ public:
 
   ARMAsmParser(const MCSubtargetInfo &STI, MCAsmParser &Parser,
                const MCInstrInfo &MII, const MCTargetOptions &Options)
-    : MCTargetAsmParser(Options, STI), MII(MII), UC(Parser) {
+    : MCTargetAsmParser(Options, STI, MII), UC(Parser) {
     MCAsmParserExtension::Initialize(Parser);
 
     // Cache the MCRegisterInfo.
@@ -608,8 +611,23 @@ public:
                                uint64_t &ErrorInfo,
                                bool MatchingInlineAsm) override;
   unsigned MatchInstruction(OperandVector &Operands, MCInst &Inst,
-                            uint64_t &ErrorInfo, bool MatchingInlineAsm,
-                            bool &EmitInITBlock, MCStreamer &Out);
+                            SmallVectorImpl<NearMissInfo> &NearMisses,
+                            bool MatchingInlineAsm, bool &EmitInITBlock,
+                            MCStreamer &Out);
+
+  struct NearMissMessage {
+    SMLoc Loc;
+    SmallString<128> Message;
+  };
+
+  const char *getCustomOperandDiag(ARMMatchResultTy MatchError);
+
+  void FilterNearMisses(SmallVectorImpl<NearMissInfo> &NearMissesIn,
+                        SmallVectorImpl<NearMissMessage> &NearMissesOut,
+                        SMLoc IDLoc, OperandVector &Operands);
+  void ReportNearMisses(SmallVectorImpl<NearMissInfo> &NearMisses, SMLoc IDLoc,
+                        OperandVector &Operands);
+
   void onLabelParsed(MCSymbol *Symbol) override;
 };
 
@@ -3387,13 +3405,13 @@ int ARMAsmParser::tryParseShiftRegister(OperandVector &Operands) {
 /// parse for a specific register type.
 bool ARMAsmParser::tryParseRegisterWithWriteBack(OperandVector &Operands) {
   MCAsmParser &Parser = getParser();
-  const AsmToken &RegTok = Parser.getTok();
+  SMLoc RegStartLoc = Parser.getTok().getLoc();
+  SMLoc RegEndLoc = Parser.getTok().getEndLoc();
   int RegNo = tryParseRegister();
   if (RegNo == -1)
     return true;
 
-  Operands.push_back(ARMOperand::CreateReg(RegNo, RegTok.getLoc(),
-                                           RegTok.getEndLoc()));
+  Operands.push_back(ARMOperand::CreateReg(RegNo, RegStartLoc, RegEndLoc));
 
   const AsmToken &ExclaimTok = Parser.getTok();
   if (ExclaimTok.is(AsmToken::Exclaim)) {
@@ -5079,7 +5097,7 @@ bool ARMAsmParser::parseMemRegOffsetShift(ARM_AM::ShiftOpc &St,
   SMLoc Loc = Parser.getTok().getLoc();
   const AsmToken &Tok = Parser.getTok();
   if (Tok.isNot(AsmToken::Identifier))
-    return true;
+    return Error(Loc, "illegal shift operator");
   StringRef ShiftName = Tok.getString();
   if (ShiftName == "lsl" || ShiftName == "LSL" ||
       ShiftName == "asl" || ShiftName == "ASL")
@@ -5786,9 +5804,9 @@ bool ARMAsmParser::shouldOmitCCOutOperand(StringRef Mnemonic,
 
 bool ARMAsmParser::shouldOmitPredicateOperand(StringRef Mnemonic,
                                               OperandVector &Operands) {
-  // VRINT{Z, R, X} have a predicate operand in VFP, but not in NEON
+  // VRINT{Z, X} have a predicate operand in VFP, but not in NEON
   unsigned RegIdx = 3;
-  if ((Mnemonic == "vrintz" || Mnemonic == "vrintx" || Mnemonic == "vrintr") &&
+  if ((Mnemonic == "vrintz" || Mnemonic == "vrintx") &&
       (static_cast<ARMOperand &>(*Operands[2]).getToken() == ".f32" ||
        static_cast<ARMOperand &>(*Operands[2]).getToken() == ".f16")) {
     if (static_cast<ARMOperand &>(*Operands[3]).isToken() &&
@@ -5825,36 +5843,55 @@ static bool doesIgnoreDataTypeSuffix(StringRef Mnemonic, StringRef DT) {
 static void applyMnemonicAliases(StringRef &Mnemonic, uint64_t Features,
                                  unsigned VariantID);
 
-static bool RequiresVFPRegListValidation(StringRef Inst,
-                                         bool &AcceptSinglePrecisionOnly,
-                                         bool &AcceptDoublePrecisionOnly) {
-  if (Inst.size() < 7)
-    return false;
+// The GNU assembler has aliases of ldrd and strd with the second register
+// omitted. We don't have a way to do that in tablegen, so fix it up here.
+//
+// We have to be careful to not emit an invalid Rt2 here, because the rest of
+// the assmebly parser could then generate confusing diagnostics refering to
+// it. If we do find anything that prevents us from doing the transformation we
+// bail out, and let the assembly parser report an error on the instruction as
+// it is written.
+void ARMAsmParser::fixupGNULDRDAlias(StringRef Mnemonic,
+                                     OperandVector &Operands) {
+  if (Mnemonic != "ldrd" && Mnemonic != "strd")
+    return;
+  if (Operands.size() < 4)
+    return;
 
-  if (Inst.startswith("fldm") || Inst.startswith("fstm")) {
-    StringRef AddressingMode = Inst.substr(4, 2);
-    if (AddressingMode == "ia" || AddressingMode == "db" ||
-        AddressingMode == "ea" || AddressingMode == "fd") {
-      AcceptSinglePrecisionOnly = Inst[6] == 's';
-      AcceptDoublePrecisionOnly = Inst[6] == 'd' || Inst[6] == 'x';
-      return true;
-    }
+  ARMOperand &Op2 = static_cast<ARMOperand &>(*Operands[2]);
+  ARMOperand &Op3 = static_cast<ARMOperand &>(*Operands[3]);
+
+  if (!Op2.isReg())
+    return;
+  if (!Op3.isMem())
+    return;
+
+  const MCRegisterClass &GPR = MRI->getRegClass(ARM::GPRRegClassID);
+  if (!GPR.contains(Op2.getReg()))
+    return;
+
+  unsigned RtEncoding = MRI->getEncodingValue(Op2.getReg());
+  if (!isThumb() && (RtEncoding & 1)) {
+    // In ARM mode, the registers must be from an aligned pair, this
+    // restriction does not apply in Thumb mode.
+    return;
   }
+  if (Op2.getReg() == ARM::PC)
+    return;
+  unsigned PairedReg = GPR.getRegister(RtEncoding + 1);
+  if (!PairedReg || PairedReg == ARM::PC ||
+      (PairedReg == ARM::SP && !hasV8Ops()))
+    return;
 
-  return false;
+  Operands.insert(
+      Operands.begin() + 3,
+      ARMOperand::CreateReg(PairedReg, Op2.getStartLoc(), Op2.getEndLoc()));
 }
 
 /// Parse an arm instruction mnemonic followed by its operands.
 bool ARMAsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
                                     SMLoc NameLoc, OperandVector &Operands) {
   MCAsmParser &Parser = getParser();
-  // FIXME: Can this be done via tablegen in some fashion?
-  bool RequireVFPRegisterListCheck;
-  bool AcceptSinglePrecisionOnly;
-  bool AcceptDoublePrecisionOnly;
-  RequireVFPRegisterListCheck =
-    RequiresVFPRegListValidation(Name, AcceptSinglePrecisionOnly,
-                                 AcceptDoublePrecisionOnly);
 
   // Apply mnemonic aliases before doing anything else, as the destination
   // mnemonic may include suffices and we want to handle them normally.
@@ -6012,16 +6049,6 @@ bool ARMAsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
   if (parseToken(AsmToken::EndOfStatement, "unexpected token in argument list"))
     return true;
 
-  if (RequireVFPRegisterListCheck) {
-    ARMOperand &Op = static_cast<ARMOperand &>(*Operands.back());
-    if (AcceptSinglePrecisionOnly && !Op.isSPRRegList())
-      return Error(Op.getStartLoc(),
-                   "VFP/Neon single precision register expected");
-    if (AcceptDoublePrecisionOnly && !Op.isDPRRegList())
-      return Error(Op.getStartLoc(),
-                   "VFP/Neon double precision register expected");
-  }
-
   tryConvertingToTwoOperandForm(Mnemonic, CarrySetting, Operands);
 
   // Some instructions, mostly Thumb, have forms for the same mnemonic that
@@ -6037,7 +6064,8 @@ bool ARMAsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
   // Some instructions have the same mnemonic, but don't always
   // have a predicate. Distinguish them here and delete the
   // predicate if needed.
-  if (shouldOmitPredicateOperand(Mnemonic, Operands))
+  if (PredicationCode == ARMCC::AL &&
+      shouldOmitPredicateOperand(Mnemonic, Operands))
     Operands.erase(Operands.begin() + 1);
 
   // ARM mode 'blx' need special handling, as the register operand version
@@ -6086,25 +6114,8 @@ bool ARMAsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
     }
   }
 
-  // GNU Assembler extension (compatibility)
-  if ((Mnemonic == "ldrd" || Mnemonic == "strd")) {
-    ARMOperand &Op2 = static_cast<ARMOperand &>(*Operands[2]);
-    ARMOperand &Op3 = static_cast<ARMOperand &>(*Operands[3]);
-    if (Op3.isMem()) {
-      assert(Op2.isReg() && "expected register argument");
-
-      unsigned SuperReg = MRI->getMatchingSuperReg(
-          Op2.getReg(), ARM::gsub_0, &MRI->getRegClass(ARM::GPRPairRegClassID));
-
-      assert(SuperReg && "expected register pair");
-
-      unsigned PairedReg = MRI->getSubReg(SuperReg, ARM::gsub_1);
-
-      Operands.insert(
-          Operands.begin() + 3,
-          ARMOperand::CreateReg(PairedReg, Op2.getStartLoc(), Op2.getEndLoc()));
-    }
-  }
+  // GNU Assembler extension (compatibility).
+  fixupGNULDRDAlias(Mnemonic, Operands);
 
   // FIXME: As said above, this is all a pretty gross hack.  This instruction
   // does not fit with other "subs" and tblgen.
@@ -8909,19 +8920,19 @@ bool ARMAsmParser::isITBlockTerminator(MCInst &Inst) const {
 }
 
 unsigned ARMAsmParser::MatchInstruction(OperandVector &Operands, MCInst &Inst,
-                                          uint64_t &ErrorInfo,
+                                          SmallVectorImpl<NearMissInfo> &NearMisses,
                                           bool MatchingInlineAsm,
                                           bool &EmitInITBlock,
                                           MCStreamer &Out) {
   // If we can't use an implicit IT block here, just match as normal.
   if (inExplicitITBlock() || !isThumbTwo() || !useImplicitITThumb())
-    return MatchInstructionImpl(Operands, Inst, ErrorInfo, MatchingInlineAsm);
+    return MatchInstructionImpl(Operands, Inst, &NearMisses, MatchingInlineAsm);
 
   // Try to match the instruction in an extension of the current IT block (if
   // there is one).
   if (inImplicitITBlock()) {
     extendImplicitITBlock(ITState.Cond);
-    if (MatchInstructionImpl(Operands, Inst, ErrorInfo, MatchingInlineAsm) ==
+    if (MatchInstructionImpl(Operands, Inst, nullptr, MatchingInlineAsm) ==
             Match_Success) {
       // The match succeded, but we still have to check that the instruction is
       // valid in this implicit IT block.
@@ -8947,7 +8958,7 @@ unsigned ARMAsmParser::MatchInstruction(OperandVector &Operands, MCInst &Inst,
   // Finish the current IT block, and try to match outside any IT block.
   flushPendingInstructions(Out);
   unsigned PlainMatchResult =
-      MatchInstructionImpl(Operands, Inst, ErrorInfo, MatchingInlineAsm);
+      MatchInstructionImpl(Operands, Inst, &NearMisses, MatchingInlineAsm);
   if (PlainMatchResult == Match_Success) {
     const MCInstrDesc &MCID = MII.get(Inst.getOpcode());
     if (MCID.isPredicable()) {
@@ -8974,7 +8985,7 @@ unsigned ARMAsmParser::MatchInstruction(OperandVector &Operands, MCInst &Inst,
   // condition, so we create an IT block with a dummy condition, and fix it up
   // once we know the actual condition.
   startImplicitITBlock();
-  if (MatchInstructionImpl(Operands, Inst, ErrorInfo, MatchingInlineAsm) ==
+  if (MatchInstructionImpl(Operands, Inst, nullptr, MatchingInlineAsm) ==
       Match_Success) {
     const MCInstrDesc &MCID = MII.get(Inst.getOpcode());
     if (MCID.isPredicable()) {
@@ -8993,7 +9004,8 @@ unsigned ARMAsmParser::MatchInstruction(OperandVector &Operands, MCInst &Inst,
   return PlainMatchResult;
 }
 
-std::string ARMMnemonicSpellCheck(StringRef S, uint64_t FBS);
+static std::string ARMMnemonicSpellCheck(StringRef S, uint64_t FBS,
+                                         unsigned VariantID = 0);
 
 static const char *getSubtargetFeatureName(uint64_t Val);
 bool ARMAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
@@ -9004,15 +9016,9 @@ bool ARMAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
   unsigned MatchResult;
   bool PendConditionalInstruction = false;
 
-  MatchResult = MatchInstruction(Operands, Inst, ErrorInfo, MatchingInlineAsm,
+  SmallVector<NearMissInfo, 4> NearMisses;
+  MatchResult = MatchInstruction(Operands, Inst, NearMisses, MatchingInlineAsm,
                                  PendConditionalInstruction, Out);
-
-  SMLoc ErrorLoc;
-  if (ErrorInfo < Operands.size()) {
-    ErrorLoc = ((ARMOperand &)*Operands[ErrorInfo]).getStartLoc();
-    if (ErrorLoc == SMLoc())
-      ErrorLoc = IDLoc;
-  }
 
   switch (MatchResult) {
   case Match_Success:
@@ -9061,33 +9067,9 @@ bool ARMAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
       Out.EmitInstruction(Inst, getSTI());
     }
     return false;
-  case Match_MissingFeature: {
-    assert(ErrorInfo && "Unknown missing feature!");
-    // Special case the error message for the very common case where only
-    // a single subtarget feature is missing (Thumb vs. ARM, e.g.).
-    std::string Msg = "instruction requires:";
-    uint64_t Mask = 1;
-    for (unsigned i = 0; i < (sizeof(ErrorInfo)*8-1); ++i) {
-      if (ErrorInfo & Mask) {
-        Msg += " ";
-        Msg += getSubtargetFeatureName(ErrorInfo & Mask);
-      }
-      Mask <<= 1;
-    }
-    return Error(IDLoc, Msg);
-  }
-  case Match_InvalidOperand: {
-    SMLoc ErrorLoc = IDLoc;
-    if (ErrorInfo != ~0ULL) {
-      if (ErrorInfo >= Operands.size())
-        return Error(IDLoc, "too few operands for instruction");
-
-      ErrorLoc = ((ARMOperand &)*Operands[ErrorInfo]).getStartLoc();
-      if (ErrorLoc == SMLoc()) ErrorLoc = IDLoc;
-    }
-
-    return Error(ErrorLoc, "invalid operand for instruction");
-  }
+  case Match_NearMisses:
+    ReportNearMisses(NearMisses, IDLoc, Operands);
+    return true;
   case Match_MnemonicFail: {
     uint64_t FBS = ComputeAvailableFeatures(getSTI().getFeatureBits());
     std::string Suggestion = ARMMnemonicSpellCheck(
@@ -9095,104 +9077,6 @@ bool ARMAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
     return Error(IDLoc, "invalid instruction" + Suggestion,
                  ((ARMOperand &)*Operands[0]).getLocRange());
   }
-  case Match_RequiresNotITBlock:
-    return Error(IDLoc, "flag setting instruction only valid outside IT block");
-  case Match_RequiresITBlock:
-    return Error(IDLoc, "instruction only valid inside IT block");
-  case Match_RequiresV6:
-    return Error(IDLoc, "instruction variant requires ARMv6 or later");
-  case Match_RequiresThumb2:
-    return Error(IDLoc, "instruction variant requires Thumb2");
-  case Match_RequiresV8:
-    return Error(IDLoc, "instruction variant requires ARMv8 or later");
-  case Match_RequiresFlagSetting:
-    return Error(IDLoc, "no flag-preserving variant of this instruction available");
-  case Match_ImmRange0_1:
-    return Error(ErrorLoc, "immediate operand must be in the range [0,1]");
-  case Match_ImmRange0_3:
-    return Error(ErrorLoc, "immediate operand must be in the range [0,3]");
-  case Match_ImmRange0_7:
-    return Error(ErrorLoc, "immediate operand must be in the range [0,7]");
-  case Match_ImmRange0_15:
-    return Error(ErrorLoc, "immediate operand must be in the range [0,15]");
-  case Match_ImmRange0_31:
-    return Error(ErrorLoc, "immediate operand must be in the range [0,31]");
-  case Match_ImmRange0_32:
-    return Error(ErrorLoc, "immediate operand must be in the range [0,32]");
-  case Match_ImmRange0_63:
-    return Error(ErrorLoc, "immediate operand must be in the range [0,63]");
-  case Match_ImmRange0_239:
-    return Error(ErrorLoc, "immediate operand must be in the range [0,239]");
-  case Match_ImmRange0_255:
-    return Error(ErrorLoc, "immediate operand must be in the range [0,255]");
-  case Match_ImmRange0_4095:
-    return Error(ErrorLoc, "immediate operand must be in the range [0,4095]");
-  case Match_ImmRange0_65535:
-    return Error(ErrorLoc, "immediate operand must be in the range [0,65535]");
-  case Match_ImmRange1_7:
-    return Error(ErrorLoc, "immediate operand must be in the range [1,7]");
-  case Match_ImmRange1_8:
-    return Error(ErrorLoc, "immediate operand must be in the range [1,8]");
-  case Match_ImmRange1_15:
-    return Error(ErrorLoc, "immediate operand must be in the range [1,15]");
-  case Match_ImmRange1_16:
-    return Error(ErrorLoc, "immediate operand must be in the range [1,16]");
-  case Match_ImmRange1_31:
-    return Error(ErrorLoc, "immediate operand must be in the range [1,31]");
-  case Match_ImmRange1_32:
-    return Error(ErrorLoc, "immediate operand must be in the range [1,32]");
-  case Match_ImmRange1_64:
-    return Error(ErrorLoc, "immediate operand must be in the range [1,64]");
-  case Match_ImmRange8_8:
-    return Error(ErrorLoc, "immediate operand must be 8.");
-  case Match_ImmRange16_16:
-    return Error(ErrorLoc, "immediate operand must be 16.");
-  case Match_ImmRange32_32:
-    return Error(ErrorLoc, "immediate operand must be 32.");
-  case Match_ImmRange256_65535:
-    return Error(ErrorLoc, "immediate operand must be in the range [255,65535]");
-  case Match_ImmRange0_16777215:
-    return Error(ErrorLoc, "immediate operand must be in the range [0,0xffffff]");
-  case Match_AlignedMemoryRequiresNone:
-  case Match_DupAlignedMemoryRequiresNone:
-  case Match_AlignedMemoryRequires16:
-  case Match_DupAlignedMemoryRequires16:
-  case Match_AlignedMemoryRequires32:
-  case Match_DupAlignedMemoryRequires32:
-  case Match_AlignedMemoryRequires64:
-  case Match_DupAlignedMemoryRequires64:
-  case Match_AlignedMemoryRequires64or128:
-  case Match_DupAlignedMemoryRequires64or128:
-  case Match_AlignedMemoryRequires64or128or256:
-  {
-    SMLoc ErrorLoc = ((ARMOperand &)*Operands[ErrorInfo]).getAlignmentLoc();
-    if (ErrorLoc == SMLoc()) ErrorLoc = IDLoc;
-    switch (MatchResult) {
-      default:
-        llvm_unreachable("Missing Match_Aligned type");
-      case Match_AlignedMemoryRequiresNone:
-      case Match_DupAlignedMemoryRequiresNone:
-        return Error(ErrorLoc, "alignment must be omitted");
-      case Match_AlignedMemoryRequires16:
-      case Match_DupAlignedMemoryRequires16:
-        return Error(ErrorLoc, "alignment must be 16 or omitted");
-      case Match_AlignedMemoryRequires32:
-      case Match_DupAlignedMemoryRequires32:
-        return Error(ErrorLoc, "alignment must be 32 or omitted");
-      case Match_AlignedMemoryRequires64:
-      case Match_DupAlignedMemoryRequires64:
-        return Error(ErrorLoc, "alignment must be 64 or omitted");
-      case Match_AlignedMemoryRequires64or128:
-      case Match_DupAlignedMemoryRequires64or128:
-        return Error(ErrorLoc, "alignment must be 64, 128 or omitted");
-      case Match_AlignedMemoryRequires64or128or256:
-        return Error(ErrorLoc, "alignment must be 64, 128, 256 or omitted");
-    }
-  }
-  case Match_InvalidComplexRotationEven:
-      return Error(IDLoc, "complex rotation must be 0, 90, 180 or 270");
-  case Match_InvalidComplexRotationOdd:
-      return Error(IDLoc, "complex rotation must be 90 or 270");
   }
 
   llvm_unreachable("Implement any new match types added!");
@@ -10201,7 +10085,212 @@ extern "C" void LLVMInitializeARMAsmParser() {
 #define GET_REGISTER_MATCHER
 #define GET_SUBTARGET_FEATURE_NAME
 #define GET_MATCHER_IMPLEMENTATION
+#define GET_MNEMONIC_SPELL_CHECKER
 #include "ARMGenAsmMatcher.inc"
+
+// Some diagnostics need to vary with subtarget features, so they are handled
+// here. For example, the DPR class has either 16 or 32 registers, depending
+// on the FPU available.
+const char *
+ARMAsmParser::getCustomOperandDiag(ARMMatchResultTy MatchError) {
+  switch (MatchError) {
+  // rGPR contains sp starting with ARMv8.
+  case Match_rGPR:
+    return hasV8Ops() ? "operand must be a register in range [r0, r14]"
+                      : "operand must be a register in range [r0, r12] or r14";
+  // DPR contains 16 registers for some FPUs, and 32 for others.
+  case Match_DPR:
+    return hasD16() ? "operand must be a register in range [d0, d15]"
+                    : "operand must be a register in range [d0, d31]";
+  case Match_DPR_RegList:
+    return hasD16() ? "operand must be a list of registers in range [d0, d15]"
+                    : "operand must be a list of registers in range [d0, d31]";
+
+  // For all other diags, use the static string from tablegen.
+  default:
+    return getMatchKindDiag(MatchError);
+  }
+}
+
+// Process the list of near-misses, throwing away ones we don't want to report
+// to the user, and converting the rest to a source location and string that
+// should be reported.
+void
+ARMAsmParser::FilterNearMisses(SmallVectorImpl<NearMissInfo> &NearMissesIn,
+                               SmallVectorImpl<NearMissMessage> &NearMissesOut,
+                               SMLoc IDLoc, OperandVector &Operands) {
+  // TODO: If operand didn't match, sub in a dummy one and run target
+  // predicate, so that we can avoid reporting near-misses that are invalid?
+  // TODO: Many operand types dont have SuperClasses set, so we report
+  // redundant ones.
+  // TODO: Some operands are superclasses of registers (e.g.
+  // MCK_RegShiftedImm), we don't have any way to represent that currently.
+  // TODO: This is not all ARM-specific, can some of it be factored out?
+
+  // Record some information about near-misses that we have already seen, so
+  // that we can avoid reporting redundant ones. For example, if there are
+  // variants of an instruction that take 8- and 16-bit immediates, we want
+  // to only report the widest one.
+  std::multimap<unsigned, unsigned> OperandMissesSeen;
+  SmallSet<uint64_t, 4> FeatureMissesSeen;
+  bool ReportedTooFewOperands = false;
+
+  // Process the near-misses in reverse order, so that we see more general ones
+  // first, and so can avoid emitting more specific ones.
+  for (NearMissInfo &I : reverse(NearMissesIn)) {
+    switch (I.getKind()) {
+    case NearMissInfo::NearMissOperand: {
+      SMLoc OperandLoc =
+          ((ARMOperand &)*Operands[I.getOperandIndex()]).getStartLoc();
+      const char *OperandDiag =
+          getCustomOperandDiag((ARMMatchResultTy)I.getOperandError());
+
+      // If we have already emitted a message for a superclass, don't also report
+      // the sub-class. We consider all operand classes that we don't have a
+      // specialised diagnostic for to be equal for the propose of this check,
+      // so that we don't report the generic error multiple times on the same
+      // operand.
+      unsigned DupCheckMatchClass = OperandDiag ? I.getOperandClass() : ~0U;
+      auto PrevReports = OperandMissesSeen.equal_range(I.getOperandIndex());
+      if (std::any_of(PrevReports.first, PrevReports.second,
+                      [DupCheckMatchClass](
+                          const std::pair<unsigned, unsigned> Pair) {
+            if (DupCheckMatchClass == ~0U || Pair.second == ~0U)
+              return Pair.second == DupCheckMatchClass;
+            else
+              return isSubclass((MatchClassKind)DupCheckMatchClass,
+                                (MatchClassKind)Pair.second);
+          }))
+        break;
+      OperandMissesSeen.insert(
+          std::make_pair(I.getOperandIndex(), DupCheckMatchClass));
+
+      NearMissMessage Message;
+      Message.Loc = OperandLoc;
+      if (OperandDiag) {
+        Message.Message = OperandDiag;
+      } else if (I.getOperandClass() == InvalidMatchClass) {
+        Message.Message = "too many operands for instruction";
+      } else {
+        Message.Message = "invalid operand for instruction";
+        DEBUG(dbgs() << "Missing diagnostic string for operand class " <<
+              getMatchClassName((MatchClassKind)I.getOperandClass())
+              << I.getOperandClass() << ", error " << I.getOperandError()
+              << ", opcode " << MII.getName(I.getOpcode()) << "\n");
+      }
+      NearMissesOut.emplace_back(Message);
+      break;
+    }
+    case NearMissInfo::NearMissFeature: {
+      uint64_t MissingFeatures = I.getFeatures();
+      // Don't report the same set of features twice.
+      if (FeatureMissesSeen.count(MissingFeatures))
+        break;
+      FeatureMissesSeen.insert(MissingFeatures);
+
+      // Special case: don't report a feature set which includes arm-mode for
+      // targets that don't have ARM mode.
+      if ((MissingFeatures & Feature_IsARM) && !hasARM())
+        break;
+      // Don't report any near-misses that both require switching instruction
+      // set, and adding other subtarget features.
+      if (isThumb() && (MissingFeatures & Feature_IsARM) &&
+          (MissingFeatures & ~Feature_IsARM))
+        break;
+      if (!isThumb() && (MissingFeatures & Feature_IsThumb) &&
+          (MissingFeatures & ~Feature_IsThumb))
+        break;
+      if (!isThumb() && (MissingFeatures & Feature_IsThumb2) &&
+          (MissingFeatures & ~(Feature_IsThumb2 | Feature_IsThumb)))
+        break;
+
+      NearMissMessage Message;
+      Message.Loc = IDLoc;
+      raw_svector_ostream OS(Message.Message);
+
+      OS << "instruction requires:";
+      uint64_t Mask = 1;
+      for (unsigned MaskPos = 0; MaskPos < (sizeof(MissingFeatures) * 8 - 1);
+           ++MaskPos) {
+        if (MissingFeatures & Mask) {
+          OS << " " << getSubtargetFeatureName(MissingFeatures & Mask);
+        }
+        Mask <<= 1;
+      }
+      NearMissesOut.emplace_back(Message);
+
+      break;
+    }
+    case NearMissInfo::NearMissPredicate: {
+      NearMissMessage Message;
+      Message.Loc = IDLoc;
+      switch (I.getPredicateError()) {
+      case Match_RequiresNotITBlock:
+        Message.Message = "flag setting instruction only valid outside IT block";
+        break;
+      case Match_RequiresITBlock:
+        Message.Message = "instruction only valid inside IT block";
+        break;
+      case Match_RequiresV6:
+        Message.Message = "instruction variant requires ARMv6 or later";
+        break;
+      case Match_RequiresThumb2:
+        Message.Message = "instruction variant requires Thumb2";
+        break;
+      case Match_RequiresV8:
+        Message.Message = "instruction variant requires ARMv8 or later";
+        break;
+      case Match_RequiresFlagSetting:
+        Message.Message = "no flag-preserving variant of this instruction available";
+        break;
+      case Match_InvalidOperand:
+        Message.Message = "invalid operand for instruction";
+        break;
+      default:
+        llvm_unreachable("Unhandled target predicate error");
+        break;
+      }
+      NearMissesOut.emplace_back(Message);
+      break;
+    }
+    case NearMissInfo::NearMissTooFewOperands: {
+      if (!ReportedTooFewOperands) {
+        SMLoc EndLoc = ((ARMOperand &)*Operands.back()).getEndLoc();
+        NearMissesOut.emplace_back(NearMissMessage{
+            EndLoc, StringRef("too few operands for instruction")});
+        ReportedTooFewOperands = true;
+      }
+      break;
+    }
+    case NearMissInfo::NoNearMiss:
+      // This should never leave the matcher.
+      llvm_unreachable("not a near-miss");
+      break;
+    }
+  }
+}
+
+void ARMAsmParser::ReportNearMisses(SmallVectorImpl<NearMissInfo> &NearMisses,
+                                    SMLoc IDLoc, OperandVector &Operands) {
+  SmallVector<NearMissMessage, 4> Messages;
+  FilterNearMisses(NearMisses, Messages, IDLoc, Operands);
+
+  if (Messages.size() == 0) {
+    // No near-misses were found, so the best we can do is "invalid
+    // instruction".
+    Error(IDLoc, "invalid instruction");
+  } else if (Messages.size() == 1) {
+    // One near miss was found, report it as the sole error.
+    Error(Messages[0].Loc, Messages[0].Message);
+  } else {
+    // More than one near miss, so report a generic "invalid instruction"
+    // error, followed by notes for each of the near-misses.
+    Error(IDLoc, "invalid instruction, any one of the following would fix this:");
+    for (auto &M : Messages) {
+      Note(M.Loc, M.Message);
+    }
+  }
+}
 
 // FIXME: This structure should be moved inside ARMTargetParser
 // when we start to table-generate them, and we can use the ARM
@@ -10313,7 +10402,7 @@ unsigned ARMAsmParser::validateTargetOperandClass(MCParsedAsmOperand &AsmOp,
   case MCK_rGPR:
     if (hasV8Ops() && Op.isReg() && Op.getReg() == ARM::SP)
       return Match_Success;
-    break;
+    return Match_rGPR;
   case MCK_GPRPair:
     if (Op.isReg() &&
         MRI->getRegClass(ARM::GPRRegClassID).contains(Op.getReg()))

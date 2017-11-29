@@ -33,6 +33,9 @@
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachinePostDominators.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/Pass.h"
@@ -40,9 +43,6 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetInstrInfo.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -246,9 +246,9 @@ MachineSinking::AllUsesDominatedByBlock(unsigned Reg,
   // BB#1: derived from LLVM BB %bb4.preheader
   //   Predecessors according to CFG: BB#0
   //     ...
-  //     %reg16385<def> = DEC64_32r %reg16437, %EFLAGS<imp-def,dead>
+  //     %reg16385<def> = DEC64_32r %reg16437, %eflags<imp-def,dead>
   //     ...
-  //     JE_4 <BB#37>, %EFLAGS<imp-use>
+  //     JE_4 <BB#37>, %eflags<imp-use>
   //   Successors according to CFG: BB#37 BB#2
   //
   // BB#2: derived from LLVM BB %bb.nph

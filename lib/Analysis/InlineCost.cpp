@@ -172,6 +172,7 @@ class CallAnalyzer : public InstVisitor<CallAnalyzer, bool> {
   void accumulateSROACost(DenseMap<Value *, int>::iterator CostIt,
                           int InstructionCost);
   bool isGEPFree(GetElementPtrInst &GEP);
+  bool canFoldInboundsGEP(GetElementPtrInst &I);
   bool accumulateGEPOffset(GEPOperator &GEP, APInt &Offset);
   bool simplifyCallSite(Function *F, CallSite CS);
   template <typename Callable>
@@ -431,39 +432,33 @@ bool CallAnalyzer::visitPHI(PHINode &I) {
   return true;
 }
 
+/// \brief Check we can fold GEPs of constant-offset call site argument pointers.
+/// This requires target data and inbounds GEPs.
+///
+/// \return true if the specified GEP can be folded.
+bool CallAnalyzer::canFoldInboundsGEP(GetElementPtrInst &I) {
+  // Check if we have a base + offset for the pointer.
+  std::pair<Value *, APInt> BaseAndOffset =
+      ConstantOffsetPtrs.lookup(I.getPointerOperand());
+  if (!BaseAndOffset.first)
+    return false;
+
+  // Check if the offset of this GEP is constant, and if so accumulate it
+  // into Offset.
+  if (!accumulateGEPOffset(cast<GEPOperator>(I), BaseAndOffset.second))
+    return false;
+
+  // Add the result as a new mapping to Base + Offset.
+  ConstantOffsetPtrs[&I] = BaseAndOffset;
+
+  return true;
+}
+
 bool CallAnalyzer::visitGetElementPtr(GetElementPtrInst &I) {
   Value *SROAArg;
   DenseMap<Value *, int>::iterator CostIt;
   bool SROACandidate =
       lookupSROAArgAndCost(I.getPointerOperand(), SROAArg, CostIt);
-
-  // Try to fold GEPs of constant-offset call site argument pointers. This
-  // requires target data and inbounds GEPs.
-  if (I.isInBounds()) {
-    // Check if we have a base + offset for the pointer.
-    Value *Ptr = I.getPointerOperand();
-    std::pair<Value *, APInt> BaseAndOffset = ConstantOffsetPtrs.lookup(Ptr);
-    if (BaseAndOffset.first) {
-      // Check if the offset of this GEP is constant, and if so accumulate it
-      // into Offset.
-      if (!accumulateGEPOffset(cast<GEPOperator>(I), BaseAndOffset.second)) {
-        // Non-constant GEPs aren't folded, and disable SROA.
-        if (SROACandidate)
-          disableSROA(CostIt);
-        return isGEPFree(I);
-      }
-
-      // Add the result as a new mapping to Base + Offset.
-      ConstantOffsetPtrs[&I] = BaseAndOffset;
-
-      // Also handle SROA candidates here, we already know that the GEP is
-      // all-constant indexed.
-      if (SROACandidate)
-        SROAArgValues[&I] = SROAArg;
-
-      return true;
-    }
-  }
 
   // Lambda to check whether a GEP's indices are all constant.
   auto IsGEPOffsetConstant = [&](GetElementPtrInst &GEP) {
@@ -473,7 +468,7 @@ bool CallAnalyzer::visitGetElementPtr(GetElementPtrInst &I) {
     return true;
   };
 
-  if (IsGEPOffsetConstant(I)) {
+  if ((I.isInBounds() && canFoldInboundsGEP(I)) || IsGEPOffsetConstant(I)) {
     if (SROACandidate)
       SROAArgValues[&I] = SROAArg;
 
@@ -1445,10 +1440,12 @@ bool CallAnalyzer::analyzeBlock(BasicBlock *BB,
     if (IsRecursiveCall || ExposesReturnsTwice || HasDynamicAlloca ||
         HasIndirectBr || HasFrameEscape) {
       if (ORE)
-        ORE->emit(OptimizationRemarkMissed(DEBUG_TYPE, "NeverInline",
-                                           CandidateCS.getInstruction())
-                  << NV("Callee", &F)
-                  << " has uninlinable pattern and cost is not fully computed");
+        ORE->emit([&]() {
+          return OptimizationRemarkMissed(DEBUG_TYPE, "NeverInline",
+                                          CandidateCS.getInstruction())
+                 << NV("Callee", &F)
+                 << " has uninlinable pattern and cost is not fully computed";
+        });
       return false;
     }
 
@@ -1458,12 +1455,13 @@ bool CallAnalyzer::analyzeBlock(BasicBlock *BB,
     if (IsCallerRecursive &&
         AllocatedSize > InlineConstants::TotalAllocaSizeRecursiveCaller) {
       if (ORE)
-        ORE->emit(
-            OptimizationRemarkMissed(DEBUG_TYPE, "NeverInline",
-                                     CandidateCS.getInstruction())
-            << NV("Callee", &F)
-            << " is recursive and allocates too much stack space. Cost is "
-               "not fully computed");
+        ORE->emit([&]() {
+          return OptimizationRemarkMissed(DEBUG_TYPE, "NeverInline",
+                                          CandidateCS.getInstruction())
+                 << NV("Callee", &F)
+                 << " is recursive and allocates too much stack space. Cost is "
+                    "not fully computed";
+        });
       return false;
     }
 

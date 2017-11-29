@@ -275,6 +275,27 @@ define <4 x double> @shuffle_v4f64_1022(<4 x double> %a, <4 x double> %b) {
   ret <4 x double> %shuffle
 }
 
+define <4 x double> @shuffle_v4f64_0213(<4 x double> %a, <4 x double> %b) {
+; AVX1-LABEL: shuffle_v4f64_0213:
+; AVX1:       # BB#0:
+; AVX1-NEXT:    vperm2f128 {{.*#+}} ymm1 = ymm0[2,3,0,1]
+; AVX1-NEXT:    vpermilpd {{.*#+}} ymm1 = ymm1[0,0,3,2]
+; AVX1-NEXT:    vblendpd {{.*#+}} ymm0 = ymm0[0],ymm1[1,2],ymm0[3]
+; AVX1-NEXT:    retq
+;
+; AVX2-LABEL: shuffle_v4f64_0213:
+; AVX2:       # BB#0:
+; AVX2-NEXT:    vpermpd {{.*#+}} ymm0 = ymm0[0,2,1,3]
+; AVX2-NEXT:    retq
+;
+; AVX512VL-LABEL: shuffle_v4f64_0213:
+; AVX512VL:       # BB#0:
+; AVX512VL-NEXT:    vpermpd {{.*#+}} ymm0 = ymm0[0,2,1,3]
+; AVX512VL-NEXT:    retq
+  %shuffle = shufflevector <4 x double> %a, <4 x double> %b, <4 x i32> <i32 0, i32 2, i32 1, i32 3>
+  ret <4 x double> %shuffle
+}
+
 define <4 x double> @shuffle_v4f64_0423(<4 x double> %a, <4 x double> %b) {
 ; ALL-LABEL: shuffle_v4f64_0423:
 ; ALL:       # BB#0:
@@ -756,6 +777,27 @@ define <4 x i64> @shuffle_v4i64_3210(<4 x i64> %a, <4 x i64> %b) {
   ret <4 x i64> %shuffle
 }
 
+define <4 x i64> @shuffle_v4i64_0213(<4 x i64> %a, <4 x i64> %b) {
+; AVX1-LABEL: shuffle_v4i64_0213:
+; AVX1:       # BB#0:
+; AVX1-NEXT:    vperm2f128 {{.*#+}} ymm1 = ymm0[2,3,0,1]
+; AVX1-NEXT:    vpermilpd {{.*#+}} ymm1 = ymm1[0,0,3,2]
+; AVX1-NEXT:    vblendpd {{.*#+}} ymm0 = ymm0[0],ymm1[1,2],ymm0[3]
+; AVX1-NEXT:    retq
+;
+; AVX2-LABEL: shuffle_v4i64_0213:
+; AVX2:       # BB#0:
+; AVX2-NEXT:    vpermpd {{.*#+}} ymm0 = ymm0[0,2,1,3]
+; AVX2-NEXT:    retq
+;
+; AVX512VL-LABEL: shuffle_v4i64_0213:
+; AVX512VL:       # BB#0:
+; AVX512VL-NEXT:    vpermpd {{.*#+}} ymm0 = ymm0[0,2,1,3]
+; AVX512VL-NEXT:    retq
+  %shuffle = shufflevector <4 x i64> %a, <4 x i64> %b, <4 x i32> <i32 0, i32 2, i32 1, i32 3>
+  ret <4 x i64> %shuffle
+}
+
 define <4 x i64> @shuffle_v4i64_0124(<4 x i64> %a, <4 x i64> %b) {
 ; AVX1-LABEL: shuffle_v4i64_0124:
 ; AVX1:       # BB#0:
@@ -1011,8 +1053,8 @@ define <4 x i64> @shuffle_v4i64_3254(<4 x i64> %a, <4 x i64> %b) {
 ;
 ; AVX512VL-LABEL: shuffle_v4i64_3254:
 ; AVX512VL:       # BB#0:
-; AVX512VL-NEXT:    vperm2f128 {{.*#+}} ymm0 = ymm0[2,3],ymm1[0,1]
-; AVX512VL-NEXT:    vpermilps {{.*#+}} ymm0 = ymm0[2,3,0,1,6,7,4,5]
+; AVX512VL-NEXT:    vperm2i128 {{.*#+}} ymm0 = ymm0[2,3],ymm1[0,1]
+; AVX512VL-NEXT:    vpshufd {{.*#+}} ymm0 = ymm0[2,3,0,1,6,7,4,5]
 ; AVX512VL-NEXT:    retq
   %shuffle = shufflevector <4 x i64> %a, <4 x i64> %b, <4 x i32> <i32 3, i32 2, i32 5, i32 4>
   ret <4 x i64> %shuffle
@@ -1033,8 +1075,8 @@ define <4 x i64> @shuffle_v4i64_3276(<4 x i64> %a, <4 x i64> %b) {
 ;
 ; AVX512VL-LABEL: shuffle_v4i64_3276:
 ; AVX512VL:       # BB#0:
-; AVX512VL-NEXT:    vperm2f128 {{.*#+}} ymm0 = ymm0[2,3],ymm1[2,3]
-; AVX512VL-NEXT:    vpermilps {{.*#+}} ymm0 = ymm0[2,3,0,1,6,7,4,5]
+; AVX512VL-NEXT:    vperm2i128 {{.*#+}} ymm0 = ymm0[2,3],ymm1[2,3]
+; AVX512VL-NEXT:    vpshufd {{.*#+}} ymm0 = ymm0[2,3,0,1,6,7,4,5]
 ; AVX512VL-NEXT:    retq
   %shuffle = shufflevector <4 x i64> %a, <4 x i64> %b, <4 x i32> <i32 3, i32 2, i32 7, i32 6>
   ret <4 x i64> %shuffle
@@ -1253,21 +1295,21 @@ define <4 x i64> @insert_mem_and_zero_v4i64(i64* %ptr) {
 define <4 x double> @insert_reg_and_zero_v4f64(double %a) {
 ; AVX1-LABEL: insert_reg_and_zero_v4f64:
 ; AVX1:       # BB#0:
-; AVX1-NEXT:    # kill: %XMM0<def> %XMM0<kill> %YMM0<def>
+; AVX1-NEXT:    # kill: %xmm0<def> %xmm0<kill> %ymm0<def>
 ; AVX1-NEXT:    vxorpd %xmm1, %xmm1, %xmm1
 ; AVX1-NEXT:    vblendpd {{.*#+}} ymm0 = ymm0[0],ymm1[1,2,3]
 ; AVX1-NEXT:    retq
 ;
 ; AVX2-LABEL: insert_reg_and_zero_v4f64:
 ; AVX2:       # BB#0:
-; AVX2-NEXT:    # kill: %XMM0<def> %XMM0<kill> %YMM0<def>
+; AVX2-NEXT:    # kill: %xmm0<def> %xmm0<kill> %ymm0<def>
 ; AVX2-NEXT:    vxorpd %xmm1, %xmm1, %xmm1
 ; AVX2-NEXT:    vblendpd {{.*#+}} ymm0 = ymm0[0],ymm1[1,2,3]
 ; AVX2-NEXT:    retq
 ;
 ; AVX512VL-LABEL: insert_reg_and_zero_v4f64:
 ; AVX512VL:       # BB#0:
-; AVX512VL-NEXT:    # kill: %XMM0<def> %XMM0<kill> %YMM0<def>
+; AVX512VL-NEXT:    # kill: %xmm0<def> %xmm0<kill> %ymm0<def>
 ; AVX512VL-NEXT:    vpxor %xmm1, %xmm1, %xmm1
 ; AVX512VL-NEXT:    vmovsd {{.*#+}} xmm0 = xmm0[0],xmm1[1]
 ; AVX512VL-NEXT:    retq

@@ -32,14 +32,14 @@
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/MachineValueType.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/CodeGen/ValueTypes.h"
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Value.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -70,8 +70,18 @@ struct IncomingArgHandler : public CallLowering::ValueHandler {
   void assignValueToReg(unsigned ValVReg, unsigned PhysReg,
                         CCValAssign &VA) override {
     markPhysRegUsed(PhysReg);
-    MIRBuilder.buildCopy(ValVReg, PhysReg);
-    // FIXME: assert extension
+    switch (VA.getLocInfo()) {
+    default:
+      MIRBuilder.buildCopy(ValVReg, PhysReg);
+      break;
+    case CCValAssign::LocInfo::SExt:
+    case CCValAssign::LocInfo::ZExt:
+    case CCValAssign::LocInfo::AExt: {
+      auto Copy = MIRBuilder.buildCopy(LLT{VA.getLocVT()}, PhysReg);
+      MIRBuilder.buildTrunc(ValVReg, Copy);
+      break;
+    }
+    }
   }
 
   void assignValueToAddress(unsigned ValVReg, unsigned Addr, uint64_t Size,

@@ -165,7 +165,7 @@ entry:
 ; MMR3: subu16   $5, $[[T19]], $[[T20]]
 
 ; MMR6: move     $[[T0:[0-9]+]], $7
-; MMR6: sw       $7, 8($sp)
+; MMR6: sw       $[[T0]], 8($sp)
 ; MMR6: move     $[[T1:[0-9]+]], $5
 ; MMR6: sw       $4, 12($sp)
 ; MMR6: lw       $[[T2:[0-9]+]], 48($sp)
@@ -222,7 +222,6 @@ entry:
 ; MM64: dsrl    $[[T3:[0-9]+]], $[[T2]], 32
 ; MM64: dsubu   $2, $[[T0]], $[[T3]]
 ; MM64: dsubu   $3, $5, $7
-; MM64: jr      $ra
 
   %r = sub i128 %a, %b
   ret i128 %r

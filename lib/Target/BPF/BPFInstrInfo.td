@@ -46,7 +46,9 @@ def BPFWrapper      : SDNode<"BPFISD::Wrapper", SDT_BPFWrapper>;
 def BPFIsLittleEndian : Predicate<"CurDAG->getDataLayout().isLittleEndian()">;
 def BPFIsBigEndian    : Predicate<"!CurDAG->getDataLayout().isLittleEndian()">;
 
-def brtarget : Operand<OtherVT>;
+def brtarget : Operand<OtherVT> {
+  let PrintMethod = "printBrTargetOperand";
+}
 def calltarget : Operand<i64>;
 
 def u64imm   : Operand<i64> {
@@ -238,9 +240,7 @@ class NEG_RR<BPFOpClass Class, BPFArithOp Opc,
              dag outs, dag ins, string asmstr, list<dag> pattern>
     : TYPE_ALU_JMP<Opc.Value, 0, outs, ins, asmstr, pattern> {
   bits<4> dst;
-  bits<4> src;
 
-  let Inst{55-52} = src;
   let Inst{51-48} = dst;
   let BPFClass = Class;
 }
@@ -400,6 +400,18 @@ class CALL<string OpcodeStr>
   let BPFClass = BPF_JMP;
 }
 
+class CALLX<string OpcodeStr>
+    : TYPE_ALU_JMP<BPF_CALL.Value, BPF_X.Value,
+                   (outs),
+                   (ins calltarget:$BrDst),
+                   !strconcat(OpcodeStr, " $BrDst"),
+                   []> {
+  bits<32> BrDst;
+
+  let Inst{31-0} = BrDst;
+  let BPFClass = BPF_JMP;
+}
+
 // Jump always
 let isBranch = 1, isTerminator = 1, hasDelaySlot=0, isBarrier = 1 in {
   def JMP : BRANCH<BPF_JA, "goto", [(br bb:$BrDst)]>;
@@ -410,6 +422,7 @@ let isCall=1, hasDelaySlot=0, Uses = [R11],
     // Potentially clobbered registers
     Defs = [R0, R1, R2, R3, R4, R5] in {
   def JAL  : CALL<"call">;
+  def JALX  : CALLX<"callx">;
 }
 
 class NOP_I<string OpcodeStr>
@@ -462,7 +475,7 @@ let usesCustomInserter = 1 in {
                       (ins GPR:$lhs, i64imm:$rhs, i64imm:$imm, GPR:$src, GPR:$src2),
                       "# Select PSEUDO $dst = $lhs $imm $rhs ? $src : $src2",
                       [(set i64:$dst,
-                       (BPFselectcc i64:$lhs, (i64 imm:$rhs), (i64 imm:$imm), i64:$src, i64:$src2))]>;
+                       (BPFselectcc i64:$lhs, (i64immSExt32:$rhs), (i64 imm:$imm), i64:$src, i64:$src2))]>;
 }
 
 // load 64-bit global addr into register
@@ -476,6 +489,7 @@ def : Pat<(i64 (and (i64 GPR:$src), 0xffffFFFF)),
 def : Pat<(BPFcall tglobaladdr:$dst), (JAL tglobaladdr:$dst)>;
 def : Pat<(BPFcall texternalsym:$dst), (JAL texternalsym:$dst)>;
 def : Pat<(BPFcall imm:$dst), (JAL imm:$dst)>;
+def : Pat<(BPFcall GPR:$dst), (JALX GPR:$dst)>;
 
 // Loads
 def : Pat<(extloadi8  ADDRri:$src), (i64 (LDB ADDRri:$src))>;

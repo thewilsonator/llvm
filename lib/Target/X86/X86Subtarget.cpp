@@ -99,22 +99,6 @@ X86Subtarget::classifyLocalReference(const GlobalValue *GV) const {
   return X86II::MO_GOTOFF;
 }
 
-static bool shouldAssumeGlobalReferenceLocal(const X86Subtarget *ST,
-                                             const TargetMachine &TM,
-                                             const Module &M,
-                                             const GlobalValue *GV) {
-  if (!TM.shouldAssumeDSOLocal(M, GV))
-    return false;
-  // A weak reference can end up being 0. If the code can be more that 4g away
-  // from zero and we are using the small code model we have to treat it as non
-  // local.
-  if (GV && GV->hasExternalWeakLinkage() &&
-      TM.getCodeModel() == CodeModel::Small && TM.isPositionIndependent() &&
-      ST->is64Bit() && ST->isTargetELF())
-    return false;
-  return true;
-}
-
 unsigned char X86Subtarget::classifyGlobalReference(const GlobalValue *GV,
                                                     const Module &M) const {
   // Large model never uses stubs.
@@ -134,7 +118,7 @@ unsigned char X86Subtarget::classifyGlobalReference(const GlobalValue *GV,
     }
   }
 
-  if (shouldAssumeGlobalReferenceLocal(this, TM, M, GV))
+  if (TM.shouldAssumeDSOLocal(M, GV))
     return classifyLocalReference(GV);
 
   if (isTargetCOFF())
@@ -176,6 +160,8 @@ X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV,
       // According to psABI, PLT stub clobbers XMM8-XMM15.
       // In Regcall calling convention those registers are used for passing
       // parameters. Thus we need to prevent lazy binding in Regcall.
+      return X86II::MO_GOTPCREL;
+    if (F && F->hasFnAttribute(Attribute::NonLazyBind) && is64Bit())
       return X86II::MO_GOTPCREL;
     return X86II::MO_PLT;
   }
@@ -283,14 +269,14 @@ void X86Subtarget::initSubtargetFeatures(StringRef CPU, StringRef FS) {
   else if (isTargetDarwin() || isTargetLinux() || isTargetSolaris() ||
            isTargetKFreeBSD() || In64BitMode)
     stackAlignment = 16;
- 
-  // Gather is available since Haswell (AVX2 set). So technically, we can generate Gathers 
-  // on all AVX2 processors. But the overhead on HSW is high. Skylake Client processor has
-  // faster Gathers than HSW and performance is similar to Skylake Server (AVX-512). 
-  // The specified overhead is relative to the Load operation."2" is the number provided 
-  // by Intel architects, This parameter is used for cost estimation of Gather Op and 
-  // comparison with other alternatives.
-  if (X86ProcFamily == IntelSkylake || hasAVX512())
+
+  // Some CPUs have more overhead for gather. The specified overhead is relative
+  // to the Load operation. "2" is the number provided by Intel architects. This
+  // parameter is used for cost estimation of Gather Op and comparison with
+  // other alternatives.
+  // TODO: Remove the explicit hasAVX512()?, That would mean we would only
+  // enable gather with a -march.
+  if (hasAVX512() || (hasAVX2() && hasFastGather()))
     GatherOverhead = 2;
   if (hasAVX512())
     ScatterOverhead = 2;
@@ -305,12 +291,15 @@ void X86Subtarget::initializeEnvironment() {
   HasPOPCNT = false;
   HasSSE4A = false;
   HasAES = false;
+  HasVAES = false;
   HasFXSR = false;
   HasXSAVE = false;
   HasXSAVEOPT = false;
   HasXSAVEC = false;
   HasXSAVES = false;
   HasPCLMUL = false;
+  HasVPCLMULQDQ = false;
+  HasGFNI = false;
   HasFMA = false;
   HasFMA4 = false;
   HasXOP = false;
@@ -324,6 +313,7 @@ void X86Subtarget::initializeEnvironment() {
   HasBMI = false;
   HasBMI2 = false;
   HasVBMI = false;
+  HasVBMI2 = false;
   HasIFMA = false;
   HasRTM = false;
   HasERI = false;
@@ -335,6 +325,8 @@ void X86Subtarget::initializeEnvironment() {
   HasVLX = false;
   HasADX = false;
   HasPKU = false;
+  HasVNNI = false;
+  HasBITALG = false;
   HasSHA = false;
   HasPRFCHW = false;
   HasRDSEED = false;
@@ -342,10 +334,11 @@ void X86Subtarget::initializeEnvironment() {
   HasMWAITX = false;
   HasCLZERO = false;
   HasMPX = false;
+  HasSHSTK = false;
+  HasIBT = false;
   HasSGX = false;
   HasCLFLUSHOPT = false;
   HasCLWB = false;
-  IsBTMemSlow = false;
   IsPMULLDSlow = false;
   IsSHLDSlow = false;
   IsUAMem16Slow = false;
@@ -354,6 +347,7 @@ void X86Subtarget::initializeEnvironment() {
   HasCmpxchg16b = false;
   UseLeaForSP = false;
   HasFastPartialYMMorZMMWrite = false;
+  HasFastGather = false;
   HasFastScalarFSQRT = false;
   HasFastVectorFSQRT = false;
   HasFastLZCNT = false;

@@ -33,6 +33,9 @@
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/TargetOpcodes.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/MC/MCInstrDesc.h"
 #include "llvm/Pass.h"
@@ -42,9 +45,6 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetOpcodes.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 #include <cassert>
 #include <cstdint>
 #include <iterator>
@@ -129,9 +129,9 @@ static bool canBeFeederToNewValueJump(const HexagonInstrInfo *QII,
   // using -- if (QRI->isSubRegister(feederReg, cmpReg1) logic
   // before the callsite of this function
   // But we can not as it comes in the following fashion.
-  //    %D0<def> = Hexagon_S2_lsr_r_p %D0<kill>, %R2<kill>
-  //    %R0<def> = KILL %R0, %D0<imp-use,kill>
-  //    %P0<def> = CMPEQri %R0<kill>, 0
+  //    %d0<def> = Hexagon_S2_lsr_r_p %d0<kill>, %r2<kill>
+  //    %r0<def> = KILL %r0, %d0<imp-use,kill>
+  //    %p0<def> = CMPEQri %r0<kill>, 0
   // Hence, we need to check if it's a KILL instruction.
   if (II->getOpcode() == TargetOpcode::KILL)
     return false;
@@ -193,9 +193,9 @@ static bool commonChecksToProhibitNewValueJump(bool afterRA,
     // to new value jump. If they are in the path, bail out.
     // KILL sets kill flag on the opcode. It also sets up a
     // single register, out of pair.
-    //    %D0<def> = S2_lsr_r_p %D0<kill>, %R2<kill>
-    //    %R0<def> = KILL %R0, %D0<imp-use,kill>
-    //    %P0<def> = C2_cmpeqi %R0<kill>, 0
+    //    %d0<def> = S2_lsr_r_p %d0<kill>, %r2<kill>
+    //    %r0<def> = KILL %r0, %d0<imp-use,kill>
+    //    %p0<def> = C2_cmpeqi %r0<kill>, 0
     // PHI can be anything after RA.
     // COPY can remateriaze things in between feeder, compare and nvj.
     if (MII->getOpcode() == TargetOpcode::KILL ||
@@ -228,7 +228,11 @@ static bool canCompareBeNewValueJump(const HexagonInstrInfo *QII,
   // If the second operand of the compare is an imm, make sure it's in the
   // range specified by the arch.
   if (!secondReg) {
-    int64_t v = MI.getOperand(2).getImm();
+    const MachineOperand &Op2 = MI.getOperand(2);
+    if (!Op2.isImm())
+      return false;
+
+    int64_t v = Op2.getImm();
     bool Valid = false;
 
     switch (MI.getOpcode()) {

@@ -1,5 +1,6 @@
 ; RUN: llc -mtriple i386-windows-gnu -exception-model sjlj -filetype asm -o - %s | FileCheck %s
 ; RUN: llc -mtriple x86_64-windows-gnu -exception-model sjlj -filetype asm -o - %s | FileCheck %s -check-prefix CHECK-X64
+; RUN: llc -mtriple x86_64-linux -exception-model sjlj -filetype asm -o - %s | FileCheck %s -check-prefix CHECK-X64-LINUX
 
 declare void @_Z20function_that_throwsv()
 declare i32 @__gxx_personality_sj0(...)
@@ -40,9 +41,9 @@ try.cont:
 ; CHECK: movl $___gxx_personality_sj0, -40(%ebp)
 ;     UFC.__lsda = $LSDA
 ; CHECK: movl $[[LSDA:GCC_except_table[0-9]+]], -36(%ebp)
-;     UFC.__jbuf[0] = $EBP
+;     UFC.__jbuf[0] = $ebp
 ; CHECK: movl %ebp, -32(%ebp)
-;     UFC.__jbuf[2] = $ESP
+;     UFC.__jbuf[2] = $esp
 ; CHECK: movl %esp, -24(%ebp)
 ;     UFC.__jbuf[1] = $EIP
 ; CHECK: movl $[[RESUME:LBB[0-9]+_[0-9]+]], -28(%ebp)
@@ -88,11 +89,11 @@ try.cont:
 ; CHECK-X64: leaq __gxx_personality_sj0(%rip), %rax
 ; CHECK-X64: movq %rax, -280(%rbp)
 ;     UFC.__lsda = $LSDA
-; CHECK-X64: movl $[[LSDA:GCC_except_table[0-9]+]], %eax
+; CHECK-X64: leaq [[LSDA:GCC_except_table[0-9]+]](%rip), %rax
 ; CHECK-X64: movq %rax, -272(%rbp)
-;     UFC.__jbuf[0] = $RBP
+;     UFC.__jbuf[0] = $rbp
 ; CHECK-X64: movq %rbp, -264(%rbp)
-;     UFC.__jbuf[2] = $RSP
+;     UFC.__jbuf[2] = $rsp
 ; CHECK-X64: movq %rsp, -248(%rbp)
 ;     UFC.__jbuf[1] = $RIP
 ; CHECK-X64: leaq .[[RESUME:LBB[0-9]+_[0-9]+]](%rip), %rax
@@ -116,4 +117,19 @@ try.cont:
 ; CHECK-X64: ud2
 ; CHECK-X64: [[CONT]]:
 ;     *Handlers[UFC.__callsite]
-; CHECK-X64: jmpq *.LJTI
+; CHECK-X64: leaq .[[TABLE:LJTI[0-9]+_[0-9]+]](%rip), %rcx
+; CHECK-X64: movl (%rcx,%rax,4), %eax
+; CHECK-X64: cltq
+; CHECK-X64: addq %rcx, %rax
+; CHECK-X64: jmpq *%rax
+
+; CHECK-X64-LINUX: .[[RESUME:LBB[0-9]+_[0-9]+]]:
+;     assert(UFC.__callsite < 1);
+; CHECK-X64-LINUX: movl -120(%rbp), %eax
+; CHECK-X64-LINUX: cmpl $1, %eax
+; CHECK-X64-LINUX: jb .[[CONT:LBB[0-9]+_[0-9]+]]
+; CHECK-X64-LINUX: ud2
+; CHECK-X64-LINUX: [[CONT]]:
+;     *Handlers[UFC.__callsite]
+; CHECK-X64-LINUX: leaq .[[TABLE:LJTI[0-9]+_[0-9]+]](%rip), %rcx
+; CHECK-X64-LINUX: jmpq *(%rcx,%rax,8)

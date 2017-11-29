@@ -55,9 +55,9 @@
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Passes.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetInstrInfo.h"
 using namespace llvm;
 
 #define FIXUPBW_DESC "X86 Byte/Word Instruction Fixup"
@@ -189,17 +189,17 @@ bool FixupBWInstPass::runOnMachineFunction(MachineFunction &MF) {
 /// So, it handles pattern like this:
 ///
 ///   BB#2: derived from LLVM BB %if.then
-///   Live Ins: %RDI
+///   Live Ins: %rdi
 ///   Predecessors according to CFG: BB#0
-///   %AX<def> = MOV16rm %RDI<kill>, 1, %noreg, 0, %noreg, %EAX<imp-def>; mem:LD2[%p]
-///                                             No %EAX<imp-use>
+///   %ax<def> = MOV16rm %rdi<kill>, 1, %noreg, 0, %noreg, %eax<imp-def>; mem:LD2[%p]
+///                                             No %eax<imp-use>
 ///   Successors according to CFG: BB#3(?%)
 ///
 ///   BB#3: derived from LLVM BB %if.end
-///   Live Ins: %EAX                            Only %AX is actually live
+///   Live Ins: %eax                            Only %ax is actually live
 ///   Predecessors according to CFG: BB#2 BB#1
-///   %AX<def> = KILL %AX, %EAX<imp-use,kill>
-///   RET 0, %AX
+///   %ax<def> = KILL %ax, %eax<imp-use,kill>
+///   RET 0, %ax
 static bool isLive(const MachineInstr &MI,
                    const LivePhysRegs &LiveRegs,
                    const TargetRegisterInfo *TRI,

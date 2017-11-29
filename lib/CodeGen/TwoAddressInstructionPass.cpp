@@ -46,6 +46,10 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/SlotIndexes.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
+#include "llvm/CodeGen/TargetOpcodes.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/MC/MCInstrDesc.h"
 #include "llvm/MC/MCInstrItineraries.h"
 #include "llvm/Pass.h"
@@ -54,11 +58,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/Target/TargetOpcodes.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 #include <cassert>
 #include <iterator>
 #include <utility>
@@ -589,23 +589,23 @@ isProfitableToCommute(unsigned regA, unsigned regB, unsigned regC,
   // e.g.
   // %reg1028<def> = EXTRACT_SUBREG %reg1027<kill>, 1
   // %reg1029<def> = MOV8rr %reg1028
-  // %reg1029<def> = SHR8ri %reg1029, 7, %EFLAGS<imp-def,dead>
+  // %reg1029<def> = SHR8ri %reg1029, 7, %eflags<imp-def,dead>
   // insert => %reg1030<def> = MOV8rr %reg1028
-  // %reg1030<def> = ADD8rr %reg1028<kill>, %reg1029<kill>, %EFLAGS<imp-def,dead>
+  // %reg1030<def> = ADD8rr %reg1028<kill>, %reg1029<kill>, %eflags<imp-def,dead>
   // In this case, it might not be possible to coalesce the second MOV8rr
   // instruction if the first one is coalesced. So it would be profitable to
   // commute it:
   // %reg1028<def> = EXTRACT_SUBREG %reg1027<kill>, 1
   // %reg1029<def> = MOV8rr %reg1028
-  // %reg1029<def> = SHR8ri %reg1029, 7, %EFLAGS<imp-def,dead>
+  // %reg1029<def> = SHR8ri %reg1029, 7, %eflags<imp-def,dead>
   // insert => %reg1030<def> = MOV8rr %reg1029
-  // %reg1030<def> = ADD8rr %reg1029<kill>, %reg1028<kill>, %EFLAGS<imp-def,dead>
+  // %reg1030<def> = ADD8rr %reg1029<kill>, %reg1028<kill>, %eflags<imp-def,dead>
 
   if (!isPlainlyKilled(MI, regC, LIS))
     return false;
 
   // Ok, we have something like:
-  // %reg1030<def> = ADD8rr %reg1028<kill>, %reg1029<kill>, %EFLAGS<imp-def,dead>
+  // %reg1030<def> = ADD8rr %reg1028<kill>, %reg1029<kill>, %eflags<imp-def,dead>
   // let's see if it's worth commuting it.
 
   // Look for situations like this:

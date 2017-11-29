@@ -40,8 +40,10 @@ void DAGTypeLegalizer::PromoteIntegerResult(SDNode *N, unsigned ResNo) {
   SDValue Res = SDValue();
 
   // See if the target wants to custom expand this node.
-  if (CustomLowerNode(N, N->getValueType(ResNo), true))
+  if (CustomLowerNode(N, N->getValueType(ResNo), true)) {
+    DEBUG(dbgs() << "Node has been custom expanded, done\n");
     return;
+  }
 
   switch (N->getOpcode()) {
   default:
@@ -568,12 +570,11 @@ SDValue DAGTypeLegalizer::PromoteIntRes_SELECT(SDNode *N) {
 
 SDValue DAGTypeLegalizer::PromoteIntRes_VSELECT(SDNode *N) {
   SDValue Mask = N->getOperand(0);
-  EVT OpTy = N->getOperand(1).getValueType();
 
-  // Promote all the way up to the canonical SetCC type.
-  Mask = PromoteTargetBoolean(Mask, OpTy);
   SDValue LHS = GetPromotedInteger(N->getOperand(1));
   SDValue RHS = GetPromotedInteger(N->getOperand(2));
+  // Promote all the way up to the canonical SetCC type.
+  Mask = PromoteTargetBoolean(Mask, LHS.getValueType());
   return DAG.getNode(ISD::VSELECT, SDLoc(N),
                      LHS.getValueType(), Mask, LHS, RHS);
 }
@@ -885,8 +886,10 @@ bool DAGTypeLegalizer::PromoteIntegerOperand(SDNode *N, unsigned OpNo) {
   DEBUG(dbgs() << "Promote integer operand: "; N->dump(&DAG); dbgs() << "\n");
   SDValue Res = SDValue();
 
-  if (CustomLowerNode(N, N->getOperand(OpNo).getValueType(), false))
+  if (CustomLowerNode(N, N->getOperand(OpNo).getValueType(), false)) {
+    DEBUG(dbgs() << "Node has been custom lowered, done\n");
     return false;
+  }
 
   switch (N->getOpcode()) {
     default:
@@ -3224,8 +3227,7 @@ SDValue DAGTypeLegalizer::ExpandIntOp_STORE(StoreSDNode *N, unsigned OpNo) {
 
     // Increment the pointer to the other half.
     unsigned IncrementSize = NVT.getSizeInBits()/8;
-    Ptr = DAG.getNode(ISD::ADD, dl, Ptr.getValueType(), Ptr,
-                      DAG.getConstant(IncrementSize, dl, Ptr.getValueType()));
+    Ptr = DAG.getObjectPtrOffset(dl, Ptr, IncrementSize);
     Hi = DAG.getTruncStore(
         Ch, dl, Hi, Ptr, N->getPointerInfo().getWithOffset(IncrementSize), NEVT,
         MinAlign(Alignment, IncrementSize), MMOFlags, AAInfo);
@@ -3260,8 +3262,7 @@ SDValue DAGTypeLegalizer::ExpandIntOp_STORE(StoreSDNode *N, unsigned OpNo) {
                          MMOFlags, AAInfo);
 
   // Increment the pointer to the other half.
-  Ptr = DAG.getNode(ISD::ADD, dl, Ptr.getValueType(), Ptr,
-                    DAG.getConstant(IncrementSize, dl, Ptr.getValueType()));
+  Ptr = DAG.getObjectPtrOffset(dl, Ptr, IncrementSize);
   // Store the lowest ExcessBits bits in the second half.
   Lo = DAG.getTruncStore(Ch, dl, Lo, Ptr,
                          N->getPointerInfo().getWithOffset(IncrementSize),

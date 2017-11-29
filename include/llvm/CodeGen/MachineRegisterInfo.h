@@ -27,9 +27,9 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBundle.h"
 #include "llvm/CodeGen/MachineOperand.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/MC/LaneBitmask.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -581,6 +581,10 @@ public:
   /// function. Writing to a constant register has no effect.
   bool isConstantPhysReg(unsigned PhysReg) const;
 
+  /// Returns true if either isConstantPhysReg or TRI->isCallerPreservedPhysReg
+  /// returns true. This is a utility member function.
+  bool isCallerPreservedOrConstPhysReg(unsigned PhysReg) const;
+
   /// Get an iterator over the pressure sets affected by the given physical or
   /// virtual register. If RegUnit is physical, it must be a register unit (from
   /// MCRegUnitIterator).
@@ -841,6 +845,10 @@ public:
   livein_iterator livein_begin() const { return LiveIns.begin(); }
   livein_iterator livein_end()   const { return LiveIns.end(); }
   bool            livein_empty() const { return LiveIns.empty(); }
+
+  ArrayRef<std::pair<unsigned, unsigned>> liveins() const {
+    return LiveIns;
+  }
 
   bool isLiveIn(unsigned Reg) const;
 

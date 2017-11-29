@@ -1634,6 +1634,50 @@ define i1 @icmp_and_shr_multiuse(i32 %X) {
   ret i1 %and3
 }
 
+; Variation of the above with an ashr
+define i1 @icmp_and_ashr_multiuse(i32 %X) {
+; CHECK-LABEL: @icmp_and_ashr_multiuse(
+; CHECK-NEXT:    [[AND:%.*]] = and i32 [[X:%.*]], 240
+; CHECK-NEXT:    [[AND2:%.*]] = and i32 [[X]], 496
+; CHECK-NEXT:    [[TOBOOL:%.*]] = icmp ne i32 [[AND]], 224
+; CHECK-NEXT:    [[TOBOOL2:%.*]] = icmp ne i32 [[AND2]], 432
+; CHECK-NEXT:    [[AND3:%.*]] = and i1 [[TOBOOL]], [[TOBOOL2]]
+; CHECK-NEXT:    ret i1 [[AND3]]
+;
+  %shr = ashr i32 %X, 4
+  %and = and i32 %shr, 15
+  %and2 = and i32 %shr, 31 ; second use of the shift
+  %tobool = icmp ne i32 %and, 14
+  %tobool2 = icmp ne i32 %and2, 27
+  %and3 = and i1 %tobool, %tobool2
+  ret i1 %and3
+}
+
+define i1 @icmp_lshr_and_overshift(i8 %X) {
+; CHECK-LABEL: @icmp_lshr_and_overshift(
+; CHECK-NEXT:    [[TOBOOL:%.*]] = icmp ugt i8 [[X:%.*]], 31
+; CHECK-NEXT:    ret i1 [[TOBOOL]]
+;
+  %shr = lshr i8 %X, 5
+  %and = and i8 %shr, 15
+  %tobool = icmp ne i8 %and, 0
+  ret i1 %tobool
+}
+
+; We shouldn't simplify this because the and uses bits that are shifted in.
+define i1 @icmp_ashr_and_overshift(i8 %X) {
+; CHECK-LABEL: @icmp_ashr_and_overshift(
+; CHECK-NEXT:    [[SHR:%.*]] = ashr i8 [[X:%.*]], 5
+; CHECK-NEXT:    [[AND:%.*]] = and i8 [[SHR]], 15
+; CHECK-NEXT:    [[TOBOOL:%.*]] = icmp ne i8 [[AND]], 0
+; CHECK-NEXT:    ret i1 [[TOBOOL]]
+;
+  %shr = ashr i8 %X, 5
+  %and = and i8 %shr, 15
+  %tobool = icmp ne i8 %and, 0
+  ret i1 %tobool
+}
+
 ; PR16244
 define i1 @test71(i8* %x) {
 ; CHECK-LABEL: @test71(
@@ -3225,4 +3269,20 @@ define i1 @knownbits8(i8 %a, i8 %b) {
   %b2 = or i8 %b1, 5
   %c = icmp sgt i8 %b2, %a2
   ret i1 %c
+}
+
+; Make sure InstCombine doesn't try too hard to simplify the icmp and break the abs idiom
+define i32 @abs_preserve(i32 %x) {
+; CHECK-LABEL: @abs_preserve(
+; CHECK-NEXT:    [[A:%.*]] = shl nsw i32 [[X:%.*]], 1
+; CHECK-NEXT:    [[C:%.*]] = icmp sgt i32 [[A]], -1
+; CHECK-NEXT:    [[NEGA:%.*]] = sub i32 0, [[A]]
+; CHECK-NEXT:    [[ABS:%.*]] = select i1 [[C]], i32 [[A]], i32 [[NEGA]]
+; CHECK-NEXT:    ret i32 [[ABS]]
+;
+  %a = mul nsw i32 %x, 2
+  %c = icmp sge i32 %a, 0
+  %nega = sub i32 0, %a
+  %abs = select i1 %c, i32 %a, i32 %nega
+  ret i32 %abs
 }

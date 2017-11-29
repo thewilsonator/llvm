@@ -27,14 +27,14 @@
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/TargetFrameLowering.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Type.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Target/TargetFrameLowering.h"
-#include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 
@@ -506,6 +506,9 @@ BitVector X86RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   for (MCSubRegIterator I(X86::RSP, this, /*IncludeSelf=*/true); I.isValid();
        ++I)
     Reserved.set(*I);
+
+  // Set the Shadow Stack Pointer as reserved.
+  Reserved.set(X86::SSP);
 
   // Set the instruction pointer register and its aliases as reserved.
   for (MCSubRegIterator I(X86::RIP, this, /*IncludeSelf=*/true); I.isValid();

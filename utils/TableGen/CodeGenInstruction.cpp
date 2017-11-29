@@ -128,8 +128,8 @@ CGIOperandList::CGIOperandList(Record *R) : TheDef(R) {
 
   // Make sure the constraints list for each operand is large enough to hold
   // constraint info, even if none is present.
-  for (unsigned i = 0, e = OperandList.size(); i != e; ++i)
-    OperandList[i].Constraints.resize(OperandList[i].MINumOperands);
+  for (OperandInfo &OpInfo : OperandList)
+    OpInfo.Constraints.resize(OpInfo.MINumOperands);
 }
 
 
@@ -430,6 +430,17 @@ FlattenAsmStringVariants(StringRef Cur, unsigned Variant) {
   return Res;
 }
 
+bool CodeGenInstruction::isOperandAPointer(unsigned i) const {
+  if (DagInit *ConstraintList = TheDef->getValueAsDag("InOperandList")) {
+    if (i < ConstraintList->getNumArgs()) {
+      if (DefInit *Constraint = dyn_cast<DefInit>(ConstraintList->getArg(i))) {
+        return Constraint->getDef()->isSubClassOf("TypedOperand") &&
+               Constraint->getDef()->getValueAsBit("IsPointer");
+      }
+    }
+  }
+  return false;
+}
 
 //===----------------------------------------------------------------------===//
 /// CodeGenInstAlias Implementation

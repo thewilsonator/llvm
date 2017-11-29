@@ -20,9 +20,9 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/None.h"
 #include "llvm/ADT/Optional.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/ADT/Triple.h"
@@ -35,9 +35,14 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineOperand.h"
+#include "llvm/CodeGen/TargetFrameLowering.h"
+#include "llvm/CodeGen/TargetLoweringObjectFile.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/DebugInfo/CodeView/CVTypeVisitor.h"
 #include "llvm/DebugInfo/CodeView/CodeView.h"
+#include "llvm/DebugInfo/CodeView/ContinuationRecordBuilder.h"
 #include "llvm/DebugInfo/CodeView/DebugInlineeLinesSubsection.h"
 #include "llvm/DebugInfo/CodeView/Line.h"
 #include "llvm/DebugInfo/CodeView/SymbolRecord.h"
@@ -66,13 +71,9 @@
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/SMLoc.h"
-#include "llvm/Target/TargetFrameLowering.h"
-#include "llvm/Target/TargetLoweringObjectFile.h"
+#include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 #include <algorithm>
 #include <cassert>
 #include <cctype>
@@ -154,11 +155,11 @@ StringRef CodeViewDebug::getFullFilepath(const DIFile *File) {
 }
 
 unsigned CodeViewDebug::maybeRecordFile(const DIFile *F) {
+  StringRef FullPath = getFullFilepath(F);
   unsigned NextId = FileIdMap.size() + 1;
-  auto Insertion = FileIdMap.insert(std::make_pair(F, NextId));
+  auto Insertion = FileIdMap.insert(std::make_pair(FullPath, NextId));
   if (Insertion.second) {
     // We have to compute the full filepath and emit a .cv_file directive.
-    StringRef FullPath = getFullFilepath(F);
     std::string Checksum = fromHex(F->getChecksum());
     void *CKMem = OS.getContext().allocate(Checksum.size(), 1);
     memcpy(CKMem, Checksum.data(), Checksum.size());
@@ -278,7 +279,7 @@ TypeIndex CodeViewDebug::getScopeIndex(const DIScope *Scope) {
   // Build the fully qualified name of the scope.
   std::string ScopeName = getFullyQualifiedName(Scope);
   StringIdRecord SID(TypeIndex(), ScopeName);
-  auto TI = TypeTable.writeKnownType(SID);
+  auto TI = TypeTable.writeLeafType(SID);
   return recordTypeIndexForDINode(Scope, TI);
 }
 
@@ -303,12 +304,12 @@ TypeIndex CodeViewDebug::getFuncIdForSubprogram(const DISubprogram *SP) {
     TypeIndex ClassType = getTypeIndex(Class);
     MemberFuncIdRecord MFuncId(ClassType, getMemberFunctionType(SP, Class),
                                DisplayName);
-    TI = TypeTable.writeKnownType(MFuncId);
+    TI = TypeTable.writeLeafType(MFuncId);
   } else {
     // Otherwise, this must be a free function.
     TypeIndex ParentScope = getScopeIndex(Scope);
     FuncIdRecord FuncId(ParentScope, getTypeIndex(SP->getType()), DisplayName);
-    TI = TypeTable.writeKnownType(FuncId);
+    TI = TypeTable.writeLeafType(FuncId);
   }
 
   return recordTypeIndexForDINode(SP, TI);
@@ -808,6 +809,10 @@ void CodeViewDebug::emitDebugInfoForFunction(const Function *GV,
   if (FuncName.empty())
     FuncName = GlobalValue::dropLLVMManglingEscape(GV->getName());
 
+  // Emit FPO data, but only on 32-bit x86. No other platforms use it.
+  if (Triple(MMI->getModule()->getTargetTriple()).getArch() == Triple::x86)
+    OS.EmitCVFPOData(Fn);
+
   // Emit a symbol subsection, required by VS2012+ to find function boundaries.
   OS.AddComment("Symbol subsection for " + Twine(FuncName));
   MCSymbol *SymbolsEnd = beginCVSubsection(DebugSubsectionKind::Symbols);
@@ -1300,7 +1305,7 @@ TypeIndex CodeViewDebug::lowerTypeArray(const DICompositeType *Ty) {
 
     StringRef Name = (i == 0) ? Ty->getName() : "";
     ArrayRecord AR(ElementTypeIndex, IndexType, ArraySize, Name);
-    ElementTypeIndex = TypeTable.writeKnownType(AR);
+    ElementTypeIndex = TypeTable.writeLeafType(AR);
   }
 
   return ElementTypeIndex;
@@ -1433,7 +1438,7 @@ TypeIndex CodeViewDebug::lowerTypePointer(const DIDerivedType *Ty) {
   // do.
   PointerOptions PO = PointerOptions::None;
   PointerRecord PR(PointeeTI, PK, PM, PO, Ty->getSizeInBits() / 8);
-  return TypeTable.writeKnownType(PR);
+  return TypeTable.writeLeafType(PR);
 }
 
 static PointerToMemberRepresentation
@@ -1484,7 +1489,7 @@ TypeIndex CodeViewDebug::lowerTypeMemberPointer(const DIDerivedType *Ty) {
   MemberPointerInfo MPI(
       ClassTI, translatePtrToMemberRep(SizeInBytes, IsPMF, Ty->getFlags()));
   PointerRecord PR(PointeeTI, PK, PM, PO, SizeInBytes, MPI);
-  return TypeTable.writeKnownType(PR);
+  return TypeTable.writeLeafType(PR);
 }
 
 /// Given a DWARF calling convention, get the CodeView equivalent. If we don't
@@ -1523,7 +1528,7 @@ TypeIndex CodeViewDebug::lowerTypeModifier(const DIDerivedType *Ty) {
   }
   TypeIndex ModifiedTI = getTypeIndex(BaseTy);
   ModifierRecord MR(ModifiedTI, Mods);
-  return TypeTable.writeKnownType(MR);
+  return TypeTable.writeLeafType(MR);
 }
 
 TypeIndex CodeViewDebug::lowerTypeFunction(const DISubroutineType *Ty) {
@@ -1540,13 +1545,13 @@ TypeIndex CodeViewDebug::lowerTypeFunction(const DISubroutineType *Ty) {
   }
 
   ArgListRecord ArgListRec(TypeRecordKind::ArgList, ArgTypeIndices);
-  TypeIndex ArgListIndex = TypeTable.writeKnownType(ArgListRec);
+  TypeIndex ArgListIndex = TypeTable.writeLeafType(ArgListRec);
 
   CallingConvention CC = dwarfCCToCodeView(Ty->getCC());
 
   ProcedureRecord Procedure(ReturnTypeIndex, CC, FunctionOptions::None,
                             ArgTypeIndices.size(), ArgListIndex);
-  return TypeTable.writeKnownType(Procedure);
+  return TypeTable.writeLeafType(Procedure);
 }
 
 TypeIndex CodeViewDebug::lowerTypeMemberFunction(const DISubroutineType *Ty,
@@ -1574,7 +1579,7 @@ TypeIndex CodeViewDebug::lowerTypeMemberFunction(const DISubroutineType *Ty,
   }
 
   ArgListRecord ArgListRec(TypeRecordKind::ArgList, ArgTypeIndices);
-  TypeIndex ArgListIndex = TypeTable.writeKnownType(ArgListRec);
+  TypeIndex ArgListIndex = TypeTable.writeLeafType(ArgListRec);
 
   CallingConvention CC = dwarfCCToCodeView(Ty->getCC());
 
@@ -1582,9 +1587,7 @@ TypeIndex CodeViewDebug::lowerTypeMemberFunction(const DISubroutineType *Ty,
   MemberFunctionRecord MFR(ReturnTypeIndex, ClassType, ThisTypeIndex, CC,
                            FunctionOptions::None, ArgTypeIndices.size(),
                            ArgListIndex, ThisAdjustment);
-  TypeIndex TI = TypeTable.writeKnownType(MFR);
-
-  return TI;
+  return TypeTable.writeLeafType(MFR);
 }
 
 TypeIndex CodeViewDebug::lowerTypeVFTableShape(const DIDerivedType *Ty) {
@@ -1593,7 +1596,7 @@ TypeIndex CodeViewDebug::lowerTypeVFTableShape(const DIDerivedType *Ty) {
   SmallVector<VFTableSlotKind, 4> Slots(VSlotCount, VFTableSlotKind::Near);
 
   VFTableShapeRecord VFTSR(Slots);
-  return TypeTable.writeKnownType(VFTSR);
+  return TypeTable.writeLeafType(VFTSR);
 }
 
 static MemberAccess translateAccessFlags(unsigned RecordTag, unsigned Flags) {
@@ -1684,9 +1687,8 @@ TypeIndex CodeViewDebug::lowerTypeEnum(const DICompositeType *Ty) {
   if (Ty->isForwardDecl()) {
     CO |= ClassOptions::ForwardReference;
   } else {
-    FieldListRecordBuilder FLRB(TypeTable);
-
-    FLRB.begin();
+    ContinuationRecordBuilder ContinuationBuilder;
+    ContinuationBuilder.begin(ContinuationRecordKind::FieldList);
     for (const DINode *Element : Ty->getElements()) {
       // We assume that the frontend provides all members in source declaration
       // order, which is what MSVC does.
@@ -1694,18 +1696,18 @@ TypeIndex CodeViewDebug::lowerTypeEnum(const DICompositeType *Ty) {
         EnumeratorRecord ER(MemberAccess::Public,
                             APSInt::getUnsigned(Enumerator->getValue()),
                             Enumerator->getName());
-        FLRB.writeMemberType(ER);
+        ContinuationBuilder.writeMemberType(ER);
         EnumeratorCount++;
       }
     }
-    FTI = FLRB.end(true);
+    FTI = TypeTable.insertRecord(ContinuationBuilder);
   }
 
   std::string FullName = getFullyQualifiedName(Ty);
 
   EnumRecord ER(EnumeratorCount, CO, FTI, FullName, Ty->getIdentifier(),
                 getTypeIndex(Ty->getBaseType()));
-  return TypeTable.writeKnownType(ER);
+  return TypeTable.writeLeafType(ER);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1808,7 +1810,7 @@ TypeIndex CodeViewDebug::lowerTypeClass(const DICompositeType *Ty) {
   std::string FullName = getFullyQualifiedName(Ty);
   ClassRecord CR(Kind, 0, CO, TypeIndex(), TypeIndex(), TypeIndex(), 0,
                  FullName, Ty->getIdentifier());
-  TypeIndex FwdDeclTI = TypeTable.writeKnownType(CR);
+  TypeIndex FwdDeclTI = TypeTable.writeLeafType(CR);
   if (!Ty->isForwardDecl())
     DeferredCompleteTypes.push_back(Ty);
   return FwdDeclTI;
@@ -1834,13 +1836,14 @@ TypeIndex CodeViewDebug::lowerCompleteTypeClass(const DICompositeType *Ty) {
 
   ClassRecord CR(Kind, FieldCount, CO, FieldTI, TypeIndex(), VShapeTI,
                  SizeInBytes, FullName, Ty->getIdentifier());
-  TypeIndex ClassTI = TypeTable.writeKnownType(CR);
+  TypeIndex ClassTI = TypeTable.writeLeafType(CR);
 
   if (const auto *File = Ty->getFile()) {
     StringIdRecord SIDR(TypeIndex(0x0), getFullFilepath(File));
-    TypeIndex SIDI = TypeTable.writeKnownType(SIDR);
+    TypeIndex SIDI = TypeTable.writeLeafType(SIDR);
+
     UdtSourceLineRecord USLR(ClassTI, SIDI, Ty->getLine());
-    TypeTable.writeKnownType(USLR);
+    TypeTable.writeLeafType(USLR);
   }
 
   addToUDTs(Ty);
@@ -1853,7 +1856,7 @@ TypeIndex CodeViewDebug::lowerTypeUnion(const DICompositeType *Ty) {
       ClassOptions::ForwardReference | getCommonClassOptions(Ty);
   std::string FullName = getFullyQualifiedName(Ty);
   UnionRecord UR(0, CO, TypeIndex(), 0, FullName, Ty->getIdentifier());
-  TypeIndex FwdDeclTI = TypeTable.writeKnownType(UR);
+  TypeIndex FwdDeclTI = TypeTable.writeLeafType(UR);
   if (!Ty->isForwardDecl())
     DeferredCompleteTypes.push_back(Ty);
   return FwdDeclTI;
@@ -1875,12 +1878,13 @@ TypeIndex CodeViewDebug::lowerCompleteTypeUnion(const DICompositeType *Ty) {
 
   UnionRecord UR(FieldCount, CO, FieldTI, SizeInBytes, FullName,
                  Ty->getIdentifier());
-  TypeIndex UnionTI = TypeTable.writeKnownType(UR);
+  TypeIndex UnionTI = TypeTable.writeLeafType(UR);
 
   StringIdRecord SIR(TypeIndex(0x0), getFullFilepath(Ty->getFile()));
-  TypeIndex SIRI = TypeTable.writeKnownType(SIR);
+  TypeIndex SIRI = TypeTable.writeLeafType(SIR);
+
   UdtSourceLineRecord USLR(UnionTI, SIRI, Ty->getLine());
-  TypeTable.writeKnownType(USLR);
+  TypeTable.writeLeafType(USLR);
 
   addToUDTs(Ty);
 
@@ -1895,8 +1899,8 @@ CodeViewDebug::lowerRecordFieldList(const DICompositeType *Ty) {
   // list record.
   unsigned MemberCount = 0;
   ClassInfo Info = collectClassInfo(Ty);
-  FieldListRecordBuilder FLBR(TypeTable);
-  FLBR.begin();
+  ContinuationRecordBuilder ContinuationBuilder;
+  ContinuationBuilder.begin(ContinuationRecordKind::FieldList);
 
   // Create base classes.
   for (const DIDerivedType *I : Info.Inheritance) {
@@ -1914,14 +1918,14 @@ CodeViewDebug::lowerRecordFieldList(const DICompositeType *Ty) {
           getTypeIndex(I->getBaseType()), getVBPTypeIndex(), VBPtrOffset,
           VBTableIndex);
 
-      FLBR.writeMemberType(VBCR);
+      ContinuationBuilder.writeMemberType(VBCR);
     } else {
       assert(I->getOffsetInBits() % 8 == 0 &&
              "bases must be on byte boundaries");
       BaseClassRecord BCR(translateAccessFlags(Ty->getTag(), I->getFlags()),
                           getTypeIndex(I->getBaseType()),
                           I->getOffsetInBits() / 8);
-      FLBR.writeMemberType(BCR);
+      ContinuationBuilder.writeMemberType(BCR);
     }
   }
 
@@ -1935,7 +1939,7 @@ CodeViewDebug::lowerRecordFieldList(const DICompositeType *Ty) {
 
     if (Member->isStaticMember()) {
       StaticDataMemberRecord SDMR(Access, MemberBaseType, MemberName);
-      FLBR.writeMemberType(SDMR);
+      ContinuationBuilder.writeMemberType(SDMR);
       MemberCount++;
       continue;
     }
@@ -1944,7 +1948,7 @@ CodeViewDebug::lowerRecordFieldList(const DICompositeType *Ty) {
     if ((Member->getFlags() & DINode::FlagArtificial) &&
         Member->getName().startswith("_vptr$")) {
       VFPtrRecord VFPR(getTypeIndex(Member->getBaseType()));
-      FLBR.writeMemberType(VFPR);
+      ContinuationBuilder.writeMemberType(VFPR);
       MemberCount++;
       continue;
     }
@@ -1961,12 +1965,12 @@ CodeViewDebug::lowerRecordFieldList(const DICompositeType *Ty) {
       StartBitOffset -= MemberOffsetInBits;
       BitFieldRecord BFR(MemberBaseType, Member->getSizeInBits(),
                          StartBitOffset);
-      MemberBaseType = TypeTable.writeKnownType(BFR);
+      MemberBaseType = TypeTable.writeLeafType(BFR);
     }
     uint64_t MemberOffsetInBytes = MemberOffsetInBits / 8;
     DataMemberRecord DMR(Access, MemberBaseType, MemberOffsetInBytes,
                          MemberName);
-    FLBR.writeMemberType(DMR);
+    ContinuationBuilder.writeMemberType(DMR);
     MemberCount++;
   }
 
@@ -1991,23 +1995,26 @@ CodeViewDebug::lowerRecordFieldList(const DICompositeType *Ty) {
     }
     assert(!Methods.empty() && "Empty methods map entry");
     if (Methods.size() == 1)
-      FLBR.writeMemberType(Methods[0]);
+      ContinuationBuilder.writeMemberType(Methods[0]);
     else {
+      // FIXME: Make this use its own ContinuationBuilder so that
+      // MethodOverloadList can be split correctly.
       MethodOverloadListRecord MOLR(Methods);
-      TypeIndex MethodList = TypeTable.writeKnownType(MOLR);
+      TypeIndex MethodList = TypeTable.writeLeafType(MOLR);
+
       OverloadedMethodRecord OMR(Methods.size(), MethodList, Name);
-      FLBR.writeMemberType(OMR);
+      ContinuationBuilder.writeMemberType(OMR);
     }
   }
 
   // Create nested classes.
   for (const DIType *Nested : Info.NestedTypes) {
     NestedTypeRecord R(getTypeIndex(DITypeRef(Nested)), Nested->getName());
-    FLBR.writeMemberType(R);
+    ContinuationBuilder.writeMemberType(R);
     MemberCount++;
   }
 
-  TypeIndex FieldTI = FLBR.end(true);
+  TypeIndex FieldTI = TypeTable.insertRecord(ContinuationBuilder);
   return std::make_tuple(FieldTI, Info.VShapeTI, MemberCount,
                          !Info.NestedTypes.empty());
 }
@@ -2016,15 +2023,14 @@ TypeIndex CodeViewDebug::getVBPTypeIndex() {
   if (!VBPType.getIndex()) {
     // Make a 'const int *' type.
     ModifierRecord MR(TypeIndex::Int32(), ModifierOptions::Const);
-    TypeIndex ModifiedTI = TypeTable.writeKnownType(MR);
+    TypeIndex ModifiedTI = TypeTable.writeLeafType(MR);
 
     PointerKind PK = getPointerSizeInBytes() == 8 ? PointerKind::Near64
                                                   : PointerKind::Near32;
     PointerMode PM = PointerMode::Pointer;
     PointerOptions PO = PointerOptions::None;
     PointerRecord PR(ModifiedTI, PK, PM, PO, getPointerSizeInBytes());
-
-    VBPType = TypeTable.writeKnownType(PR);
+    VBPType = TypeTable.writeLeafType(PR);
   }
 
   return VBPType;
@@ -2057,7 +2063,7 @@ TypeIndex CodeViewDebug::getTypeIndexForReferenceTo(DITypeRef TypeRef) {
                                                 : PointerKind::Near32,
                    PointerMode::LValueReference, PointerOptions::None,
                    Ty->getSizeInBits() / 8);
-  return TypeTable.writeKnownType(PR);
+  return TypeTable.writeLeafType(PR);
 }
 
 TypeIndex CodeViewDebug::getCompleteTypeIndex(DITypeRef TypeRef) {

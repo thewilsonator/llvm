@@ -329,14 +329,6 @@ SDValue BPFTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   // turn it into a TargetGlobalAddress node so that legalize doesn't hack it.
   // Likewise ExternalSymbol -> TargetExternalSymbol.
   if (GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(Callee)) {
-    auto GV = G->getGlobal();
-    fail(CLI.DL, DAG,
-         "A call to global function '" + StringRef(GV->getName())
-         + "' is not supported. "
-         + (GV->isDeclaration() ?
-           "Only calls to predefined BPF helpers are allowed." :
-           "Please use __attribute__((always_inline) to make sure"
-           " this function is inlined."));
     Callee = DAG.getTargetGlobalAddress(G->getGlobal(), CLI.DL, PtrVT,
                                         G->getOffset(), 0);
   } else if (ExternalSymbolSDNode *E = dyn_cast<ExternalSymbolSDNode>(Callee)) {
@@ -611,11 +603,15 @@ BPFTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
         .addReg(LHS)
         .addReg(MI.getOperand(2).getReg())
         .addMBB(Copy1MBB);
-  else
+  else {
+    int64_t imm32 = MI.getOperand(2).getImm();
+    // sanity check before we build J*_ri instruction.
+    assert (isInt<32>(imm32));
     BuildMI(BB, DL, TII.get(NewCC))
         .addReg(LHS)
-        .addImm(MI.getOperand(2).getImm())
+        .addImm(imm32)
         .addMBB(Copy1MBB);
+  }
 
   // Copy0MBB:
   //  %FalseValue = ...

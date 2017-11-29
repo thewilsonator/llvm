@@ -214,6 +214,9 @@ void MIRParserImpl::reportDiagnostic(const SMDiagnostic &Diag) {
   case SourceMgr::DK_Note:
     Kind = DS_Note;
     break;
+  case SourceMgr::DK_Remark:
+    llvm_unreachable("remark unexpected");
+    break;
   }
   Context.diagnose(DiagnosticInfoMIRParser(Kind, Diag));
 }
@@ -438,6 +441,7 @@ bool MIRParserImpl::parseRegisterInfo(PerFunctionMIParsingState &PFS,
 
     if (StringRef(VReg.Class.Value).equals("_")) {
       Info.Kind = VRegInfo::GENERIC;
+      Info.D.RegBank = nullptr;
     } else {
       const auto *RC = getRegClass(MF, VReg.Class.Value);
       if (RC) {

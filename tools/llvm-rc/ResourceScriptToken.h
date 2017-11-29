@@ -9,7 +9,7 @@
 //
 // This declares the .rc script tokens and defines an interface for tokenizing
 // the input data. The list of available tokens is located at
-// ResourceScriptTokenList.h.
+// ResourceScriptTokenList.def.
 //
 // Note that the tokenizer does not support comments or preprocessor
 // directives. The preprocessor should do its work on the .rc file before
@@ -47,15 +47,14 @@ public:
   enum class Kind {
 #define TOKEN(Name) Name,
 #define SHORT_TOKEN(Name, Ch) Name,
-#include "ResourceScriptTokenList.h"
-#undef TOKEN
-#undef SHORT_TOKEN
+#include "ResourceScriptTokenList.def"
   };
 
   RCToken(RCToken::Kind RCTokenKind, StringRef Value);
 
   // Get an integer value of the integer token.
   uint32_t intValue() const;
+  bool isLongInt() const;
 
   StringRef value() const;
   Kind kind() const;

@@ -42,6 +42,7 @@
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/Pass.h"
@@ -50,7 +51,6 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetRegisterInfo.h"
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
@@ -111,9 +111,7 @@ namespace {
   public:
     static char ID;
 
-    HexagonHardwareLoops() : MachineFunctionPass(ID) {
-      initializeHexagonHardwareLoopsPass(*PassRegistry::getPassRegistry());
-    }
+    HexagonHardwareLoops() : MachineFunctionPass(ID) {}
 
     bool runOnMachineFunction(MachineFunction &MF) override;
 
@@ -359,7 +357,7 @@ namespace {
     }
 
     void print(raw_ostream &OS, const TargetRegisterInfo *TRI = nullptr) const {
-      if (isReg()) { OS << PrintReg(Contents.R.Reg, TRI, Contents.R.Sub); }
+      if (isReg()) { OS << printReg(Contents.R.Reg, TRI, Contents.R.Sub); }
       if (isImm()) { OS << Contents.ImmVal; }
     }
   };
@@ -513,8 +511,8 @@ HexagonHardwareLoops::getComparisonKind(unsigned CondOpc,
                                         int64_t IVBump) const {
   Comparison::Kind Cmp = (Comparison::Kind)0;
   switch (CondOpc) {
-  case Hexagon::C2_cmpeqi:
   case Hexagon::C2_cmpeq:
+  case Hexagon::C2_cmpeqi:
   case Hexagon::C2_cmpeqp:
     Cmp = Comparison::EQ;
     break;
@@ -522,21 +520,35 @@ HexagonHardwareLoops::getComparisonKind(unsigned CondOpc,
   case Hexagon::C4_cmpneqi:
     Cmp = Comparison::NE;
     break;
+  case Hexagon::C2_cmplt:
+    Cmp = Comparison::LTs;
+    break;
+  case Hexagon::C2_cmpltu:
+    Cmp = Comparison::LTu;
+    break;
   case Hexagon::C4_cmplte:
+  case Hexagon::C4_cmpltei:
     Cmp = Comparison::LEs;
     break;
   case Hexagon::C4_cmplteu:
+  case Hexagon::C4_cmplteui:
     Cmp = Comparison::LEu;
     break;
-  case Hexagon::C2_cmpgtui:
+  case Hexagon::C2_cmpgt:
+  case Hexagon::C2_cmpgti:
+  case Hexagon::C2_cmpgtp:
+    Cmp = Comparison::GTs;
+    break;
   case Hexagon::C2_cmpgtu:
+  case Hexagon::C2_cmpgtui:
   case Hexagon::C2_cmpgtup:
     Cmp = Comparison::GTu;
     break;
-  case Hexagon::C2_cmpgti:
-  case Hexagon::C2_cmpgt:
-  case Hexagon::C2_cmpgtp:
-    Cmp = Comparison::GTs;
+  case Hexagon::C2_cmpgei:
+    Cmp = Comparison::GEs;
+    break;
+  case Hexagon::C2_cmpgeui:
+    Cmp = Comparison::GEs;
     break;
   default:
     return (Comparison::Kind)0;
@@ -685,15 +697,21 @@ CountValue *HexagonHardwareLoops::getLoopTripCount(MachineLoop *L,
   if (InitialValue->isReg()) {
     unsigned R = InitialValue->getReg();
     MachineBasicBlock *DefBB = MRI->getVRegDef(R)->getParent();
-    if (!MDT->properlyDominates(DefBB, Header))
-      return nullptr;
+    if (!MDT->properlyDominates(DefBB, Header)) {
+      int64_t V;
+      if (!checkForImmediate(*InitialValue, V))
+        return nullptr;
+    }
     OldInsts.push_back(MRI->getVRegDef(R));
   }
   if (EndValue->isReg()) {
     unsigned R = EndValue->getReg();
     MachineBasicBlock *DefBB = MRI->getVRegDef(R)->getParent();
-    if (!MDT->properlyDominates(DefBB, Header))
-      return nullptr;
+    if (!MDT->properlyDominates(DefBB, Header)) {
+      int64_t V;
+      if (!checkForImmediate(*EndValue, V))
+        return nullptr;
+    }
     OldInsts.push_back(MRI->getVRegDef(R));
   }
 
@@ -1702,7 +1720,7 @@ bool HexagonHardwareLoops::fixupInductionVariable(MachineLoop *L) {
     MachineOperand &MO = PredDef->getOperand(i);
     if (MO.isReg()) {
       // Skip all implicit references.  In one case there was:
-      //   %vreg140<def> = FCMPUGT32_rr %vreg138, %vreg139, %USR<imp-use>
+      //   %vreg140<def> = FCMPUGT32_rr %vreg138, %vreg139, %usr<imp-use>
       if (MO.isImplicit())
         continue;
       if (MO.isUse()) {

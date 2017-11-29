@@ -88,6 +88,7 @@ class SITargetLowering final : public AMDGPUTargetLowering {
                                      DAGCombinerInfo &DCI) const;
   SDValue performSHLPtrCombine(SDNode *N,
                                unsigned AS,
+                               EVT MemVT,
                                DAGCombinerInfo &DCI) const;
 
   SDValue performMemSDNodeCombine(MemSDNode *N, DAGCombinerInfo &DCI) const;
@@ -246,6 +247,8 @@ public:
   MachineBasicBlock *
   EmitInstrWithCustomInserter(MachineInstr &MI,
                               MachineBasicBlock *BB) const override;
+
+  bool hasBitPreservingFPLogic(EVT VT) const override;
   bool enableAggressiveFMAFusion(EVT VT) const override;
   EVT getSetCCResultType(const DataLayout &DL, LLVMContext &Context,
                          EVT VT) const override;
@@ -274,6 +277,12 @@ public:
                    SDValue V) const;
 
   void finalizeLowering(MachineFunction &MF) const override;
+
+  void computeKnownBitsForFrameIndex(const SDValue Op,
+                                     KnownBits &Known,
+                                     const APInt &DemandedElts,
+                                     const SelectionDAG &DAG,
+                                     unsigned Depth = 0) const override;
 };
 
 } // End namespace llvm

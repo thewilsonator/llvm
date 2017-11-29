@@ -35,20 +35,20 @@
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/RegisterClassInfo.h"
 #include "llvm/CodeGen/SlotIndexes.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
+#include "llvm/CodeGen/TargetOpcodes.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/DebugLoc.h"
-#include "llvm/Pass.h"
 #include "llvm/MC/LaneBitmask.h"
 #include "llvm/MC/MCInstrDesc.h"
 #include "llvm/MC/MCRegisterInfo.h"
+#include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetInstrInfo.h"
-#include "llvm/Target/TargetOpcodes.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 #include <algorithm>
 #include <cassert>
 #include <iterator>
@@ -363,7 +363,7 @@ bool CoalescerPair::setRegisters(const MachineInstr *MI) {
     Flipped = true;
   }
 
-  const MachineRegisterInfo &MRI = MI->getParent()->getParent()->getRegInfo();
+  const MachineRegisterInfo &MRI = MI->getMF()->getRegInfo();
 
   if (TargetRegisterInfo::isPhysicalRegister(Dst)) {
     // Eliminate DstSub on a physreg.
@@ -569,7 +569,7 @@ bool RegisterCoalescer::adjustCopiesBackFrom(const CoalescerPair &CP,
   // in IntB, we can merge them.
   if (ValS+1 != BS) return false;
 
-  DEBUG(dbgs() << "Extending: " << PrintReg(IntB.reg, TRI));
+  DEBUG(dbgs() << "Extending: " << printReg(IntB.reg, TRI));
 
   SlotIndex FillerStart = ValS->end, FillerEnd = BS->start;
   // We are about to delete CopyMI, so need to remove it as the 'instruction
@@ -1337,6 +1337,9 @@ bool RegisterCoalescer::reMaterializeTrivialDef(const CoalescerPair &CP,
       MachineInstr *UseMI = UseMO.getParent();
       if (UseMI->isDebugValue()) {
         UseMO.setReg(DstReg);
+        // Move the debug value directly after the def of the rematerialized
+        // value in DstReg.
+        MBB->splice(std::next(NewMI.getIterator()), UseMI->getParent(), UseMI);
         DEBUG(dbgs() << "\t\tupdated: " << *UseMI);
       }
     }
@@ -1635,8 +1638,8 @@ bool RegisterCoalescer::joinCopy(MachineInstr *CopyMI, bool &Again) {
 
   // Enforce policies.
   if (CP.isPhys()) {
-    DEBUG(dbgs() << "\tConsidering merging " << PrintReg(CP.getSrcReg(), TRI)
-                 << " with " << PrintReg(CP.getDstReg(), TRI, CP.getSrcIdx())
+    DEBUG(dbgs() << "\tConsidering merging " << printReg(CP.getSrcReg(), TRI)
+                 << " with " << printReg(CP.getDstReg(), TRI, CP.getSrcIdx())
                  << '\n');
     if (!canJoinPhys(CP)) {
       // Before giving up coalescing, if definition of source is defined by
@@ -1658,13 +1661,13 @@ bool RegisterCoalescer::joinCopy(MachineInstr *CopyMI, bool &Again) {
       dbgs() << "\tConsidering merging to "
              << TRI->getRegClassName(CP.getNewRC()) << " with ";
       if (CP.getDstIdx() && CP.getSrcIdx())
-        dbgs() << PrintReg(CP.getDstReg()) << " in "
+        dbgs() << printReg(CP.getDstReg()) << " in "
                << TRI->getSubRegIndexName(CP.getDstIdx()) << " and "
-               << PrintReg(CP.getSrcReg()) << " in "
+               << printReg(CP.getSrcReg()) << " in "
                << TRI->getSubRegIndexName(CP.getSrcIdx()) << '\n';
       else
-        dbgs() << PrintReg(CP.getSrcReg(), TRI) << " in "
-               << PrintReg(CP.getDstReg(), TRI, CP.getSrcIdx()) << '\n';
+        dbgs() << printReg(CP.getSrcReg(), TRI) << " in "
+               << printReg(CP.getDstReg(), TRI, CP.getSrcIdx()) << '\n';
     });
   }
 
@@ -1755,11 +1758,11 @@ bool RegisterCoalescer::joinCopy(MachineInstr *CopyMI, bool &Again) {
   TRI->updateRegAllocHint(CP.getSrcReg(), CP.getDstReg(), *MF);
 
   DEBUG({
-    dbgs() << "\tSuccess: " << PrintReg(CP.getSrcReg(), TRI, CP.getSrcIdx())
-           << " -> " << PrintReg(CP.getDstReg(), TRI, CP.getDstIdx()) << '\n';
+    dbgs() << "\tSuccess: " << printReg(CP.getSrcReg(), TRI, CP.getSrcIdx())
+           << " -> " << printReg(CP.getDstReg(), TRI, CP.getDstIdx()) << '\n';
     dbgs() << "\tResult = ";
     if (CP.isPhys())
-      dbgs() << PrintReg(CP.getDstReg(), TRI);
+      dbgs() << printReg(CP.getDstReg(), TRI);
     else
       dbgs() << LIS->getInterval(CP.getDstReg());
     dbgs() << '\n';
@@ -1794,7 +1797,7 @@ bool RegisterCoalescer::joinReservedPhysReg(CoalescerPair &CP) {
           return false;
       }
       if (RHS.overlaps(LIS->getRegUnit(*UI))) {
-        DEBUG(dbgs() << "\t\tInterference: " << PrintRegUnit(*UI, TRI) << '\n');
+        DEBUG(dbgs() << "\t\tInterference: " << printRegUnit(*UI, TRI) << '\n');
         return false;
       }
     }
@@ -1817,20 +1820,20 @@ bool RegisterCoalescer::joinReservedPhysReg(CoalescerPair &CP) {
   MachineInstr *CopyMI;
   if (CP.isFlipped()) {
     // Physreg is copied into vreg
-    //   %vregY = COPY %X
-    //   ...  //< no other def of %X here
+    //   %vregY = COPY %x
+    //   ...  //< no other def of %x here
     //   use %vregY
     // =>
     //   ...
-    //   use %X
+    //   use %x
     CopyMI = MRI->getVRegDef(SrcReg);
   } else {
     // VReg is copied into physreg:
     //   %vregX = def
-    //   ... //< no other def or use of %Y here
-    //   %Y = COPY %vregX
+    //   ... //< no other def or use of %y here
+    //   %y = COPY %vregX
     // =>
-    //   %Y = def
+    //   %y = def
     //   ...
     if (!MRI->hasOneNonDBGUse(SrcReg)) {
       DEBUG(dbgs() << "\t\tMultiple vreg uses!\n");
@@ -1864,7 +1867,7 @@ bool RegisterCoalescer::joinReservedPhysReg(CoalescerPair &CP) {
 
     // We're going to remove the copy which defines a physical reserved
     // register, so remove its valno, etc.
-    DEBUG(dbgs() << "\t\tRemoving phys reg def of " << PrintReg(DstReg, TRI)
+    DEBUG(dbgs() << "\t\tRemoving phys reg def of " << printReg(DstReg, TRI)
           << " at " << CopyRegIdx << "\n");
 
     LIS->removePhysRegDefAt(DstReg, CopyRegIdx);
@@ -2485,9 +2488,9 @@ void JoinVals::computeAssignment(unsigned ValNo, JoinVals &Other) {
     assert(V.OtherVNI && "OtherVNI not assigned, can't merge.");
     assert(Other.Vals[V.OtherVNI->id].isAnalyzed() && "Missing recursion");
     Assignments[ValNo] = Other.Assignments[V.OtherVNI->id];
-    DEBUG(dbgs() << "\t\tmerge " << PrintReg(Reg) << ':' << ValNo << '@'
+    DEBUG(dbgs() << "\t\tmerge " << printReg(Reg) << ':' << ValNo << '@'
                  << LR.getValNumInfo(ValNo)->def << " into "
-                 << PrintReg(Other.Reg) << ':' << V.OtherVNI->id << '@'
+                 << printReg(Other.Reg) << ':' << V.OtherVNI->id << '@'
                  << V.OtherVNI->def << " --> @"
                  << NewVNInfo[Assignments[ValNo]]->def << '\n');
     break;
@@ -2515,7 +2518,7 @@ bool JoinVals::mapValues(JoinVals &Other) {
   for (unsigned i = 0, e = LR.getNumValNums(); i != e; ++i) {
     computeAssignment(i, Other);
     if (Vals[i].Resolution == CR_Impossible) {
-      DEBUG(dbgs() << "\t\tinterference at " << PrintReg(Reg) << ':' << i
+      DEBUG(dbgs() << "\t\tinterference at " << printReg(Reg) << ':' << i
                    << '@' << LR.getValNumInfo(i)->def << '\n');
       return false;
     }
@@ -2538,11 +2541,11 @@ taintExtent(unsigned ValNo, LaneBitmask TaintedLanes, JoinVals &Other,
     // lanes escape the block.
     SlotIndex End = OtherI->end;
     if (End >= MBBEnd) {
-      DEBUG(dbgs() << "\t\ttaints global " << PrintReg(Other.Reg) << ':'
+      DEBUG(dbgs() << "\t\ttaints global " << printReg(Other.Reg) << ':'
                    << OtherI->valno->id << '@' << OtherI->start << '\n');
       return false;
     }
-    DEBUG(dbgs() << "\t\ttaints local " << PrintReg(Other.Reg) << ':'
+    DEBUG(dbgs() << "\t\ttaints local " << printReg(Other.Reg) << ':'
                  << OtherI->valno->id << '@' << OtherI->start
                  << " to " << End << '\n');
     // A dead def is not a problem.
@@ -2585,7 +2588,7 @@ bool JoinVals::resolveConflicts(JoinVals &Other) {
     assert(V.Resolution != CR_Impossible && "Unresolvable conflict");
     if (V.Resolution != CR_Unresolved)
       continue;
-    DEBUG(dbgs() << "\t\tconflict at " << PrintReg(Reg) << ':' << i
+    DEBUG(dbgs() << "\t\tconflict at " << printReg(Reg) << ':' << i
                  << '@' << LR.getValNumInfo(i)->def << '\n');
     if (SubRangeJoin)
       return false;
@@ -2685,8 +2688,8 @@ void JoinVals::pruneValues(JoinVals &Other,
           for (MachineOperand &MO :
                Indexes->getInstructionFromIndex(Def)->operands()) {
             if (MO.isReg() && MO.isDef() && MO.getReg() == Reg) {
-              if (MO.getSubReg() != 0)
-                MO.setIsUndef(EraseImpDef);
+              if (MO.getSubReg() != 0 && MO.isUndef() && !EraseImpDef)
+                MO.setIsUndef(false);
               MO.setIsDead(false);
             }
           }
@@ -2696,7 +2699,7 @@ void JoinVals::pruneValues(JoinVals &Other,
         if (!EraseImpDef)
           EndPoints.push_back(Def);
       }
-      DEBUG(dbgs() << "\t\tpruned " << PrintReg(Other.Reg) << " at " << Def
+      DEBUG(dbgs() << "\t\tpruned " << printReg(Other.Reg) << " at " << Def
                    << ": " << Other.LR << '\n');
       break;
     }
@@ -2708,7 +2711,7 @@ void JoinVals::pruneValues(JoinVals &Other,
         // computeAssignment(), the value that was originally copied could have
         // been replaced.
         LIS->pruneValue(LR, Def, &EndPoints);
-        DEBUG(dbgs() << "\t\tpruned all of " << PrintReg(Reg) << " at "
+        DEBUG(dbgs() << "\t\tpruned all of " << printReg(Reg) << " at "
                      << Def << ": " << LR << '\n');
       }
       break;
@@ -3016,7 +3019,7 @@ bool RegisterCoalescer::joinVirtRegs(CoalescerPair &CP) {
         R.LaneMask = Mask;
       }
     }
-    DEBUG(dbgs() << "\t\tLHST = " << PrintReg(CP.getDstReg())
+    DEBUG(dbgs() << "\t\tLHST = " << printReg(CP.getDstReg())
                  << ' ' << LHS << '\n');
 
     // Determine lanemasks of RHS in the coalesced register and merge subranges.
@@ -3218,7 +3221,7 @@ bool RegisterCoalescer::applyTerminalRule(const MachineInstr &Copy) const {
       continue;
     // Check that OtherReg interfere with DstReg.
     if (LIS->getInterval(OtherReg).overlaps(DstLI)) {
-      DEBUG(dbgs() << "Apply terminal rule for: " << PrintReg(DstReg) << '\n');
+      DEBUG(dbgs() << "Apply terminal rule for: " << printReg(DstReg) << '\n');
       return true;
     }
   }
@@ -3372,7 +3375,7 @@ bool RegisterCoalescer::runOnMachineFunction(MachineFunction &fn) {
     if (MRI->reg_nodbg_empty(Reg))
       continue;
     if (MRI->recomputeRegClass(Reg)) {
-      DEBUG(dbgs() << PrintReg(Reg) << " inflated to "
+      DEBUG(dbgs() << printReg(Reg) << " inflated to "
                    << TRI->getRegClassName(MRI->getRegClass(Reg)) << '\n');
       ++NumInflated;
 

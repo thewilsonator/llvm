@@ -16,7 +16,7 @@
 
 #include "PPC.h"
 #include "PPCRegisterInfo.h"
-#include "llvm/Target/TargetInstrInfo.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
 
 #define GET_INSTRINFO_HEADER
 #include "PPCGenInstrInfo.inc"
@@ -282,6 +282,9 @@ public:
   ArrayRef<std::pair<unsigned, const char *>>
   getSerializableBitmaskMachineOperandTargetFlags() const override;
 
+  // Expand VSX Memory Pseudo instruction to either a VSX or a FP instruction.
+  bool expandVSXMemPseudo(MachineInstr &MI) const;
+
   // Lower pseudo instructions after register allocation.
   bool expandPostRAPseudo(MachineInstr &MI) const override;
 
@@ -293,6 +296,23 @@ public:
   }
   const TargetRegisterClass *updatedRC(const TargetRegisterClass *RC) const;
   static int getRecordFormOpcode(unsigned Opcode);
+
+  bool isTOCSaveMI(const MachineInstr &MI) const;
+
+  bool isSignOrZeroExtended(const MachineInstr &MI, bool SignExt,
+                            const unsigned PhiDepth) const;
+
+  /// Return true if the output of the instruction is always a sign-extended,
+  /// i.e. 0 to 31-th bits are same as 32-th bit.
+  bool isSignExtended(const MachineInstr &MI, const unsigned depth = 0) const {
+    return isSignOrZeroExtended(MI, true, depth);
+  }
+
+  /// Return true if the output of the instruction is always zero-extended,
+  /// i.e. 0 to 31-th bits are all zeros
+  bool isZeroExtended(const MachineInstr &MI, const unsigned depth = 0) const {
+   return isSignOrZeroExtended(MI, false, depth);
+  }
 };
 
 }

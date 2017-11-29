@@ -22,6 +22,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/ManagedStatic.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/Signals.h"
@@ -68,7 +69,7 @@ public:
 
 static ExitOnError ExitOnErr;
 
-LLVM_ATTRIBUTE_NORETURN static void fatalError(Twine Message) {
+LLVM_ATTRIBUTE_NORETURN static void fatalError(const Twine &Message) {
   errs() << Message << "\n";
   exit(1);
 }
@@ -107,10 +108,10 @@ int main(int argc_, const char *argv_[]) {
   }
 
   // Read and tokenize the input file.
-  const Twine &Filename = InArgsInfo[0];
-  ErrorOr<std::unique_ptr<MemoryBuffer>> File = MemoryBuffer::getFile(Filename);
+  ErrorOr<std::unique_ptr<MemoryBuffer>> File =
+      MemoryBuffer::getFile(InArgsInfo[0]);
   if (!File) {
-    fatalError("Error opening file '" + Filename +
+    fatalError("Error opening file '" + Twine(InArgsInfo[0]) +
                "': " + File.getError().message());
   }
 
@@ -123,9 +124,7 @@ int main(int argc_, const char *argv_[]) {
     const Twine TokenNames[] = {
 #define TOKEN(Name) #Name,
 #define SHORT_TOKEN(Name, Ch) #Name,
-#include "ResourceScriptTokenList.h"
-#undef TOKEN
-#undef SHORT_TOKEN
+#include "ResourceScriptTokenList.def"
     };
 
     for (const RCToken &Token : Tokens) {
@@ -137,6 +136,13 @@ int main(int argc_, const char *argv_[]) {
       outs() << "\n";
     }
   }
+
+  SearchParams Params;
+  SmallString<128> InputFile(InArgsInfo[0]);
+  llvm::sys::fs::make_absolute(InputFile);
+  Params.InputFilePath = InputFile;
+  Params.Include = InputArgs.getAllArgValues(OPT_INCLUDE);
+  Params.NoInclude = InputArgs.getAllArgValues(OPT_NOINCLUDE);
 
   std::unique_ptr<ResourceFileWriter> Visitor;
   bool IsDryRun = InputArgs.hasArg(OPT_DRY_RUN);
@@ -153,7 +159,8 @@ int main(int argc_, const char *argv_[]) {
     if (EC)
       fatalError("Error opening output file '" + OutArgsInfo[0] +
                  "': " + EC.message());
-    Visitor = llvm::make_unique<ResourceFileWriter>(std::move(FOut));
+    Visitor = llvm::make_unique<ResourceFileWriter>(Params, std::move(FOut));
+    Visitor->AppendNull = InputArgs.hasArg(OPT_ADD_NULL);
 
     ExitOnErr(NullResource().visit(Visitor.get()));
 
@@ -169,6 +176,10 @@ int main(int argc_, const char *argv_[]) {
     if (!IsDryRun)
       ExitOnErr(Resource->visit(Visitor.get()));
   }
+
+  // STRINGTABLE resources come at the very end.
+  if (!IsDryRun)
+    ExitOnErr(Visitor->dumpAllStringTables());
 
   return 0;
 }

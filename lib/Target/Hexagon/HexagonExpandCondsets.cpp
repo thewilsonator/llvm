@@ -103,6 +103,8 @@
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/SlotIndexes.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/IR/Function.h"
 #include "llvm/MC/LaneBitmask.h"
@@ -111,8 +113,6 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 #include <cassert>
 #include <iterator>
 #include <set>
@@ -1137,8 +1137,8 @@ bool HexagonExpandCondsets::coalesceRegisters(RegisterRef R1, RegisterRef R2) {
 
   DEBUG(dbgs() << "compatible registers: ("
                << (Overlap ? "overlap" : "disjoint") << ")\n  "
-               << PrintReg(R1.Reg, TRI, R1.Sub) << "  " << L1 << "\n  "
-               << PrintReg(R2.Reg, TRI, R2.Sub) << "  " << L2 << "\n");
+               << printReg(R1.Reg, TRI, R1.Sub) << "  " << L1 << "\n  "
+               << printReg(R2.Reg, TRI, R2.Sub) << "  " << L2 << "\n");
   if (R1.Sub || R2.Sub)
     return false;
   if (Overlap)

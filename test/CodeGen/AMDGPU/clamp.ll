@@ -398,7 +398,8 @@ define amdgpu_kernel void @v_clamp_f32_snan_no_dx10clamp(float addrspace(1)* %ou
 
 ; GCN-LABEL: {{^}}v_clamp_f32_snan_no_dx10clamp_nnan_src:
 ; GCN: {{buffer|flat|global}}_load_dword [[A:v[0-9]+]]
-; GCN: v_med3_f32 v{{[0-9]+}}, [[A]], 0, 1.0
+; GCN: v_add_f32_e32 [[ADD:v[0-9]+]], 1.0, [[A]]
+; GCN: v_med3_f32 v{{[0-9]+}}, [[ADD]], 0, 1.0
 define amdgpu_kernel void @v_clamp_f32_snan_no_dx10clamp_nnan_src(float addrspace(1)* %out, float addrspace(1)* %aptr) #4 {
   %tid = call i32 @llvm.amdgcn.workitem.id.x()
   %gep0 = getelementptr float, float addrspace(1)* %aptr, i32 %tid
@@ -660,6 +661,28 @@ define amdgpu_kernel void @v_clamp_v2f16_shuffle(<2 x half> addrspace(1)* %out, 
   %med = call <2 x half> @llvm.minnum.v2f16(<2 x half> %max, <2 x half> <half 1.0, half 1.0>)
 
   store <2 x half> %med, <2 x half> addrspace(1)* %out.gep
+  ret void
+}
+
+; GCN-LABEL: {{^}}v_clamp_diff_source_f32:
+; GCN: v_add_f32_e32 [[A:v[0-9]+]]
+; GCN: v_add_f32_e32 [[B:v[0-9]+]]
+; GCN: v_max_f32_e64 v{{[0-9]+}}, [[A]], [[B]] clamp{{$}}
+define amdgpu_kernel void @v_clamp_diff_source_f32(float addrspace(1)* %out, float addrspace(1)* %aptr) #0
+{
+  %gep0 = getelementptr float, float addrspace(1)* %aptr, i32 0
+  %gep1 = getelementptr float, float addrspace(1)* %aptr, i32 1
+  %gep2 = getelementptr float, float addrspace(1)* %aptr, i32 2
+  %l0 = load float, float addrspace(1)* %gep0
+  %l1 = load float, float addrspace(1)* %gep1
+  %l2 = load float, float addrspace(1)* %gep2
+  %a = fadd nsz float %l0, %l1
+  %b = fadd nsz float %l0, %l2
+  %res = call nsz float @llvm.maxnum.f32(float %a, float %b)
+  %max = call nsz float @llvm.maxnum.f32(float %res, float 0.0)
+  %min = call nsz float @llvm.minnum.f32(float %max, float 1.0)
+  %out.gep = getelementptr float, float addrspace(1)* %out, i32 3
+  store float %min, float addrspace(1)* %out.gep
   ret void
 }
 

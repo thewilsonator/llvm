@@ -1,5 +1,5 @@
-; RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=kaveri -verify-machineinstrs < %s | FileCheck -enable-var-scope -check-prefixes=GCN,CIVI %s
-; RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx900 -verify-machineinstrs < %s | FileCheck -enable-var-scope -check-prefixes=GCN,GFX9 %s
+; RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=kaveri -enable-ipra=0 -verify-machineinstrs < %s | FileCheck -enable-var-scope -check-prefixes=GCN,CIVI %s
+; RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx900 -enable-ipra=0 -verify-machineinstrs < %s | FileCheck -enable-var-scope -check-prefixes=GCN,GFX9 %s
 
 ; GCN-LABEL: {{^}}use_dispatch_ptr:
 ; GCN: s_load_dword s{{[0-9]+}}, s[6:7], 0x0
@@ -547,16 +547,16 @@ define void @func_use_every_sgpr_input_call_use_workgroup_id_xyz() #1 {
 ; GCN: s_mov_b32 s5, s32
 ; GCN: s_add_u32 s32, s32, 0x300
 
-; GCN-DAG: s_mov_b32 [[SAVE_X:s[0-57-9][0-9]*]], s14
-; GCN-DAG: s_mov_b32 [[SAVE_Y:s[0-68-9][0-9]*]], s15
-; GCN-DAG: s_mov_b32 [[SAVE_Z:s[0-79][0-9]*]], s16
+; GCN-DAG: s_mov_b32 [[SAVE_X:s[0-9]+]], s14
+; GCN-DAG: s_mov_b32 [[SAVE_Y:s[0-9]+]], s15
+; GCN-DAG: s_mov_b32 [[SAVE_Z:s[0-9]+]], s16
 ; GCN-DAG: s_mov_b64 {{s\[[0-9]+:[0-9]+\]}}, s[6:7]
 ; GCN-DAG: s_mov_b64 {{s\[[0-9]+:[0-9]+\]}}, s[8:9]
 ; GCN-DAG: s_mov_b64 {{s\[[0-9]+:[0-9]+\]}}, s[10:11]
 
-; GCN-DAG: s_mov_b32 s6, s14
-; GCN-DAG: s_mov_b32 s7, s15
-; GCN-DAG: s_mov_b32 s8, s16
+; GCN-DAG: s_mov_b32 s6, [[SAVE_X]]
+; GCN-DAG: s_mov_b32 s7, [[SAVE_Y]]
+; GCN-DAG: s_mov_b32 s8, [[SAVE_Z]]
 ; GCN: s_swappc_b64
 
 ; GCN: buffer_store_dword v{{[0-9]+}}, off, s[0:3], s5 offset:4

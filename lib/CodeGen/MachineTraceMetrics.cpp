@@ -22,15 +22,15 @@
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSchedule.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 #include <algorithm>
 #include <cassert>
 #include <iterator>
@@ -1135,14 +1135,14 @@ computeInstrHeights(const MachineBasicBlock *MBB) {
     for (LiveInReg &LIR : TBI.LiveIns) {
       const MachineInstr *DefMI = MTM.MRI->getVRegDef(LIR.Reg);
       LIR.Height = Heights.lookup(DefMI);
-      DEBUG(dbgs() << ' ' << PrintReg(LIR.Reg) << '@' << LIR.Height);
+      DEBUG(dbgs() << ' ' << printReg(LIR.Reg) << '@' << LIR.Height);
     }
 
     // Transfer the live regunits to the live-in list.
     for (SparseSet<LiveRegUnit>::const_iterator
          RI = RegUnits.begin(), RE = RegUnits.end(); RI != RE; ++RI) {
       TBI.LiveIns.push_back(LiveInReg(RI->RegUnit, RI->Cycle));
-      DEBUG(dbgs() << ' ' << PrintRegUnit(RI->RegUnit, MTM.TRI)
+      DEBUG(dbgs() << ' ' << printRegUnit(RI->RegUnit, MTM.TRI)
                    << '@' << RI->Cycle);
     }
     DEBUG(dbgs() << '\n');

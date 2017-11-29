@@ -38,12 +38,12 @@
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/MC/LaneBitmask.h"
 #include "llvm/MC/MCInstrDesc.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetRegisterInfo.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -830,7 +830,7 @@ void SIPeepholeSDWA::legalizeScalarOperands(MachineInstr &MI, const SISubtarget 
 bool SIPeepholeSDWA::runOnMachineFunction(MachineFunction &MF) {
   const SISubtarget &ST = MF.getSubtarget<SISubtarget>();
 
-  if (!ST.hasSDWA())
+  if (!ST.hasSDWA() || skipFunction(*MF.getFunction()))
     return false;
 
   MRI = &MF.getRegInfo();

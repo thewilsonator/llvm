@@ -727,8 +727,9 @@ static void yamlToPdb(StringRef Path) {
   auto &TpiBuilder = Builder.getTpiBuilder();
   const auto &Tpi = YamlObj.TpiStream.getValueOr(DefaultTpiStream);
   TpiBuilder.setVersionHeader(Tpi.Version);
+  TypeTableBuilder TS(Allocator);
   for (const auto &R : Tpi.Records) {
-    CVType Type = R.toCodeViewRecord(Allocator);
+    CVType Type = R.toCodeViewRecord(TS);
     TpiBuilder.addTypeRecord(Type.RecordData, None);
   }
 
@@ -736,7 +737,7 @@ static void yamlToPdb(StringRef Path) {
   auto &IpiBuilder = Builder.getIpiBuilder();
   IpiBuilder.setVersionHeader(Ipi.Version);
   for (const auto &R : Ipi.Records) {
-    CVType Type = R.toCodeViewRecord(Allocator);
+    CVType Type = R.toCodeViewRecord(TS);
     IpiBuilder.addTypeRecord(Type.RecordData, None);
   }
 
@@ -1202,14 +1203,11 @@ int main(int argc_, const char *argv_[]) {
       opts::pretty::ExcludeCompilands.push_back(
           "d:\\\\th.obj.x86fre\\\\minkernel");
     }
-    std::for_each(opts::pretty::InputFilenames.begin(),
-                  opts::pretty::InputFilenames.end(), dumpPretty);
+    llvm::for_each(opts::pretty::InputFilenames, dumpPretty);
   } else if (opts::DumpSubcommand) {
-    std::for_each(opts::dump::InputFilenames.begin(),
-                  opts::dump::InputFilenames.end(), dumpRaw);
+    llvm::for_each(opts::dump::InputFilenames, dumpRaw);
   } else if (opts::BytesSubcommand) {
-    std::for_each(opts::bytes::InputFilenames.begin(),
-                  opts::bytes::InputFilenames.end(), dumpBytes);
+    llvm::for_each(opts::bytes::InputFilenames, dumpBytes);
   } else if (opts::DiffSubcommand) {
     for (StringRef S : opts::diff::RawModiEquivalences) {
       StringRef Left;

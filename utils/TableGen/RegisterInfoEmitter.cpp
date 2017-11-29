@@ -868,8 +868,8 @@ RegisterInfoEmitter::runMCDesc(raw_ostream &OS, CodeGenTarget &Target,
 
     // Compute the corresponding sub-register indexes.
     SubRegIdxVec &SRIs = SubRegIdxLists[i];
-    for (unsigned j = 0, je = SR.size(); j != je; ++j)
-      SRIs.push_back(Reg.getSubRegIndex(SR[j]));
+    for (const CodeGenRegister *S : SR)
+      SRIs.push_back(Reg.getSubRegIndex(S));
     SubRegIdxSeqs.add(SRIs);
 
     // Super-registers are already computed.
@@ -1007,8 +1007,7 @@ RegisterInfoEmitter::runMCDesc(raw_ostream &OS, CodeGenTarget &Target,
     OS << "  // " << Name << " Register Class...\n"
        << "  const MCPhysReg " << Name
        << "[] = {\n    ";
-    for (unsigned i = 0, e = Order.size(); i != e; ++i) {
-      Record *Reg = Order[i];
+    for (Record *Reg : Order) {
       OS << getQualifiedName(Reg) << ", ";
     }
     OS << "\n  };\n\n";
@@ -1017,8 +1016,7 @@ RegisterInfoEmitter::runMCDesc(raw_ostream &OS, CodeGenTarget &Target,
        << "  const uint8_t " << Name
        << "Bits[] = {\n    ";
     BitVectorEmitter BVE;
-    for (unsigned i = 0, e = Order.size(); i != e; ++i) {
-      Record *Reg = Order[i];
+    for (Record *Reg : Order) {
       BVE.add(Target.getRegBank().getReg(Reg)->EnumValue);
     }
     BVE.print(OS);
@@ -1104,7 +1102,7 @@ RegisterInfoEmitter::runTargetHeader(raw_ostream &OS, CodeGenTarget &Target,
   const std::string &TargetName = Target.getName();
   std::string ClassName = TargetName + "GenRegisterInfo";
 
-  OS << "#include \"llvm/Target/TargetRegisterInfo.h\"\n\n";
+  OS << "#include \"llvm/CodeGen/TargetRegisterInfo.h\"\n\n";
 
   OS << "namespace llvm {\n\n";
 

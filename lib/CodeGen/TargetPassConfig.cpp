@@ -88,8 +88,6 @@ static cl::opt<bool> DisableCGP("disable-cgp", cl::Hidden,
     cl::desc("Disable Codegen Prepare"));
 static cl::opt<bool> DisableCopyProp("disable-copyprop", cl::Hidden,
     cl::desc("Disable Copy Propagation pass"));
-static cl::opt<bool> DisableCopyPropPreRegRewrite("disable-copyprop-prerewrite", cl::Hidden,
-    cl::desc("Disable Copy Propagation Pre-Register Re-write pass"));
 static cl::opt<bool> DisablePartialLibcallInlining("disable-partial-libcall-inlining",
     cl::Hidden, cl::desc("Disable Partial Libcall Inlining"));
 static cl::opt<bool> EnableImplicitNullChecks(
@@ -113,6 +111,11 @@ static cl::opt<bool> VerifyMachineCode("verify-machineinstrs", cl::Hidden,
 static cl::opt<bool> EnableMachineOutliner("enable-machine-outliner",
     cl::Hidden,
     cl::desc("Enable machine outliner"));
+static cl::opt<bool> EnableLinkOnceODROutlining(
+    "enable-linkonceodr-outlining",
+    cl::Hidden,
+    cl::desc("Enable the machine outliner on linkonceodr functions"),
+    cl::init(false));
 // Enable or disable FastISel. Both options are needed, because
 // FastISel is enabled by default with -fast, and we wish to be
 // able to enable or disable fast-isel independently from -O0.
@@ -253,9 +256,6 @@ static IdentifyingPassPtr overridePass(AnalysisID StandardID,
 
   if (StandardID == &MachineCopyPropagationID)
     return applyDisable(TargetID, DisableCopyProp);
-
-  if (StandardID == &MachineCopyPropagationPreRegRewriteID)
-    return applyDisable(TargetID, DisableCopyPropPreRegRewrite);
 
   return TargetID;
 }
@@ -600,8 +600,14 @@ void TargetPassConfig::addIRPasses() {
       addPass(createPrintFunctionPass(dbgs(), "\n\n*** Code after LSR ***\n"));
   }
 
-  if (getOptLevel() != CodeGenOpt::None && EnableMergeICmps) {
-    addPass(createMergeICmpsPass());
+  if (getOptLevel() != CodeGenOpt::None) {
+    // The MergeICmpsPass tries to create memcmp calls by grouping sequences of
+    // loads and compares. ExpandMemCmpPass then tries to expand those calls
+    // into optimally-sized loads and compares. The transforms are enabled by a
+    // target lowering hook.
+    if (EnableMergeICmps)
+      addPass(createMergeICmpsPass());
+    addPass(createExpandMemCmpPass());
   }
 
   // Run GC lowering passes for builtin collectors
@@ -619,8 +625,8 @@ void TargetPassConfig::addIRPasses() {
   if (getOptLevel() != CodeGenOpt::None && !DisablePartialLibcallInlining)
     addPass(createPartiallyInlineLibCallsPass());
 
-  // Insert calls to mcount-like functions.
-  addPass(createCountingFunctionInserterPass());
+  // Instrument function entry and exit, e.g. with calls to mcount().
+  addPass(createPostInlineEntryExitInstrumenterPass());
 
   // Add scalarization of target's unsupported masked memory intrinsics pass.
   // the unsupported intrinsic will be replaced with a chain of basic blocks,
@@ -896,7 +902,7 @@ void TargetPassConfig::addMachinePasses() {
   addPass(&PatchableFunctionID, false);
 
   if (EnableMachineOutliner)
-    PM->add(createMachineOutlinerPass());
+    PM->add(createMachineOutlinerPass(EnableLinkOnceODROutlining));
 
   AddingMachinePasses = false;
 }
@@ -1068,10 +1074,6 @@ void TargetPassConfig::addOptimizedRegAlloc(FunctionPass *RegAllocPass) {
 
     // Allow targets to change the register assignments before rewriting.
     addPreRewrite();
-
-    // Copy propagate to forward register uses and try to eliminate COPYs that
-    // were not coalesced.
-    addPass(&MachineCopyPropagationPreRegRewriteID);
 
     // Finally rewrite virtual registers.
     addPass(&VirtRegRewriterID);
