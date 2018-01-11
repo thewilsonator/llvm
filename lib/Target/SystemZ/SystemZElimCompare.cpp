@@ -434,11 +434,8 @@ bool SystemZElimCompare::optimizeCompareZero(
   }
 
   // Also do a forward search to handle cases where an instruction after the
-  // compare can be converted like
-  //
-  // LTEBRCompare %f0s, %f0s, %cc<imp-def> LTEBRCompare %f0s, %f0s, %cc<imp-def>
-  // %f2s<def> = LER %f0s
-  //
+  // compare can be converted, like
+  // LTEBRCompare %f0s, %f0s; %f2s = LER %f0s  =>  LTEBRCompare %f2s, %f0s
   MBBI = Compare, MBBE = MBB.end();
   while (++MBBI != MBBE) {
     MachineInstr &MI = *MBBI;
@@ -593,7 +590,7 @@ bool SystemZElimCompare::processBlock(MachineBasicBlock &MBB) {
 }
 
 bool SystemZElimCompare::runOnMachineFunction(MachineFunction &F) {
-  if (skipFunction(*F.getFunction()))
+  if (skipFunction(F.getFunction()))
     return false;
 
   TII = static_cast<const SystemZInstrInfo *>(F.getSubtarget().getInstrInfo());

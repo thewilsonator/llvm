@@ -633,6 +633,10 @@ public:
   bool isStaticMember() const { return getFlags() & FlagStaticMember; }
   bool isLValueReference() const { return getFlags() & FlagLValueReference; }
   bool isRValueReference() const { return getFlags() & FlagRValueReference; }
+  bool isTypePassByValue() const { return getFlags() & FlagTypePassByValue; }
+  bool isTypePassByReference() const {
+    return getFlags() & FlagTypePassByReference;
+  }
 
   static bool classof(const Metadata *MD) {
     switch (MD->getMetadataID()) {
@@ -2297,8 +2301,9 @@ public:
 
   /// Prepend \p DIExpr with a deref and offset operation and optionally turn it
   /// into a stack value.
-  static DIExpression *prepend(const DIExpression *DIExpr, bool Deref,
-                               int64_t Offset = 0, bool StackValue = false);
+  static DIExpression *prepend(const DIExpression *DIExpr, bool DerefBefore,
+                               int64_t Offset = 0, bool DerefAfter = false,
+                               bool StackValue = false);
 
   /// Create a DIExpression to describe one part of an aggregate variable that
   /// is fragmented across multiple Values. The DW_OP_LLVM_fragment operation

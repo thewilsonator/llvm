@@ -12,16 +12,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "ByteStreamer.h"
-#include "DwarfDebug.h"
-#include "DwarfExpression.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/DIE.h"
 #include "llvm/CodeGen/MachineFunction.h"
-#include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/TargetLoweringObjectFile.h"
-#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
@@ -171,14 +167,15 @@ void AsmPrinter::emitDwarfSymbolReference(const MCSymbol *Label,
   EmitLabelDifference(Label, Label->getSection().getBeginSymbol(), 4);
 }
 
-void AsmPrinter::emitDwarfStringOffset(DwarfStringPoolEntryRef S) const {
+void AsmPrinter::emitDwarfStringOffset(DwarfStringPoolEntry S) const {
   if (MAI->doesDwarfUseRelocationsAcrossSections()) {
-    emitDwarfSymbolReference(S.getSymbol());
+    assert(S.Symbol && "No symbol available");
+    emitDwarfSymbolReference(S.Symbol);
     return;
   }
 
   // Just emit the offset directly; no need for symbol math.
-  EmitInt32(S.getOffset());
+  EmitInt32(S.Offset);
 }
 
 //===----------------------------------------------------------------------===//

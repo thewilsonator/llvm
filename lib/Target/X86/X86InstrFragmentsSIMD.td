@@ -465,9 +465,10 @@ def X86SubVBroadcast : SDNode<"X86ISD::SUBV_BROADCAST",
 
 def X86VBroadcast : SDNode<"X86ISD::VBROADCAST", SDTVBroadcast>;
 def X86VBroadcastm : SDNode<"X86ISD::VBROADCASTM", SDTVBroadcastm>;
-def X86Vextract   : SDNode<"X86ISD::VEXTRACT",  SDTypeProfile<1, 2,
-                              [SDTCisVec<1>,
-                               SDTCisPtrTy<2>]>, []>;
+def X86kextract : SDNode<"ISD::EXTRACT_VECTOR_ELT",
+                         SDTypeProfile<1, 2, [SDTCisVT<0, i32>,
+                                              SDTCVecEltisVT<1, i1>,
+                                              SDTCisPtrTy<2>]>>;
 
 def X86Blendi    : SDNode<"X86ISD::BLENDI",   SDTBlend>;
 
@@ -669,8 +670,6 @@ def X86vfproundRnd: SDNode<"X86ISD::VFPROUND_RND",
                                              SDTCVecEltisVT<1, f64>,
                                              SDTCisOpSmallerThanOp<0, 1>,
                                              SDTCisVT<2, i32>]>>;
-
-def X86cvt2mask   : SDNode<"X86ISD::CVT2MASK", SDTIntTruncOp>;
 
 // galois field arithmetic
 def X86GF2P8affineinvqb : SDNode<"X86ISD::GF2P8AFFINEINVQB", SDTBlend>;

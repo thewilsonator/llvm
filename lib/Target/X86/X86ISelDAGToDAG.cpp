@@ -13,7 +13,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "X86.h"
-#include "X86InstrBuilder.h"
 #include "X86MachineFunctionInfo.h"
 #include "X86RegisterInfo.h"
 #include "X86Subtarget.h"
@@ -21,8 +20,6 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
-#include "llvm/CodeGen/MachineInstrBuilder.h"
-#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/SelectionDAGISel.h"
 #include "llvm/IR/ConstantRange.h"
 #include "llvm/IR/Function.h"
@@ -109,14 +106,15 @@ namespace {
       if (Base_Reg.getNode())
         Base_Reg.getNode()->dump();
       else
-        dbgs() << "nul";
-      dbgs() << " Base.FrameIndex " << Base_FrameIndex << '\n'
-             << " Scale" << Scale << '\n'
+        dbgs() << "nul\n";
+      if (BaseType == FrameIndexBase)
+        dbgs() << " Base.FrameIndex " << Base_FrameIndex << '\n';
+      dbgs() << " Scale " << Scale << '\n'
              << "IndexReg ";
       if (IndexReg.getNode())
         IndexReg.getNode()->dump();
       else
-        dbgs() << "nul";
+        dbgs() << "nul\n";
       dbgs() << " Disp " << Disp << '\n'
              << "GV ";
       if (GV)
@@ -462,7 +460,7 @@ static bool isLegalMaskCompare(SDNode *N, const X86Subtarget *Subtarget) {
     // this happens we will use 512-bit operations and the mask will not be
     // zero extended.
     EVT OpVT = N->getOperand(0).getValueType();
-    if (OpVT == MVT::v8i32 || OpVT == MVT::v8f32)
+    if (OpVT.is256BitVector() || OpVT.is128BitVector())
       return Subtarget->hasVLX();
 
     return true;
@@ -622,8 +620,8 @@ static bool isCalleeLoad(SDValue Callee, SDValue &Chain, bool HasCallSeq) {
 
 void X86DAGToDAGISel::PreprocessISelDAG() {
   // OptFor[Min]Size are used in pattern predicates that isel is matching.
-  OptForSize = MF->getFunction()->optForSize();
-  OptForMinSize = MF->getFunction()->optForMinSize();
+  OptForSize = MF->getFunction().optForSize();
+  OptForMinSize = MF->getFunction().optForMinSize();
   assert((!OptForMinSize || OptForSize) && "OptForMinSize implies OptForSize");
 
   for (SelectionDAG::allnodes_iterator I = CurDAG->allnodes_begin(),
@@ -756,9 +754,9 @@ void X86DAGToDAGISel::emitSpecialCodeForMain() {
 
 void X86DAGToDAGISel::EmitFunctionEntryCode() {
   // If this is main, emit special code for main.
-  if (const Function *Fn = MF->getFunction())
-    if (Fn->hasExternalLinkage() && Fn->getName() == "main")
-      emitSpecialCodeForMain();
+  const Function &F = MF->getFunction();
+  if (F.hasExternalLinkage() && F.getName() == "main")
+    emitSpecialCodeForMain();
 }
 
 static bool isDispSafeForFrameIndex(int64_t Val) {
@@ -1510,6 +1508,12 @@ bool X86DAGToDAGISel::matchAddressBase(SDValue N, X86ISelAddressMode &AM) {
 bool X86DAGToDAGISel::matchVectorAddress(SDValue N, X86ISelAddressMode &AM) {
   // TODO: Support other operations.
   switch (N.getOpcode()) {
+  case ISD::Constant: {
+    uint64_t Val = cast<ConstantSDNode>(N)->getSExtValue();
+    if (!foldOffsetIntoAddress(Val, AM))
+      return false;
+    break;
+  }
   case X86ISD::Wrapper:
     if (!matchWrapper(N, AM))
       return false;
@@ -1525,7 +1529,7 @@ bool X86DAGToDAGISel::selectVectorAddr(SDNode *Parent, SDValue N, SDValue &Base,
   X86ISelAddressMode AM;
   auto *Mgs = cast<X86MaskedGatherScatterSDNode>(Parent);
   AM.IndexReg = Mgs->getIndex();
-  AM.Scale = Mgs->getValue().getScalarValueSizeInBits() / 8;
+  AM.Scale = cast<ConstantSDNode>(Mgs->getScale())->getZExtValue();
 
   unsigned AddrSpace = cast<MemSDNode>(Parent)->getPointerInfo().getAddrSpace();
   // AddrSpace 256 -> GS, 257 -> FS, 258 -> SS.
@@ -1536,14 +1540,8 @@ bool X86DAGToDAGISel::selectVectorAddr(SDNode *Parent, SDValue N, SDValue &Base,
   if (AddrSpace == 258)
     AM.Segment = CurDAG->getRegister(X86::SS, MVT::i16);
 
-  // If Base is 0, the whole address is in index and the Scale is 1
-  if (isa<ConstantSDNode>(N)) {
-    assert(cast<ConstantSDNode>(N)->isNullValue() &&
-           "Unexpected base in gather/scatter");
-    AM.Scale = 1;
-  }
-  // Otherwise, try to match into the base and displacement fields.
-  else if (matchVectorAddress(N, AM))
+  // Try to match into the base and displacement fields.
+  if (matchVectorAddress(N, AM))
     return false;
 
   MVT VT = N.getSimpleValueType();

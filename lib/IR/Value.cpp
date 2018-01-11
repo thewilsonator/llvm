@@ -39,6 +39,10 @@
 
 using namespace llvm;
 
+static cl::opt<unsigned> NonGlobalValueMaxNameSize(
+    "non-global-value-max-name-size", cl::Hidden, cl::init(1024),
+    cl::desc("Maximum size for the name of non-global values."));
+
 //===----------------------------------------------------------------------===//
 //                                Value Class
 //===----------------------------------------------------------------------===//
@@ -244,6 +248,11 @@ void Value::setNameImpl(const Twine &NewName) {
   if (getName() == NameRef)
     return;
 
+  // Cap the size of non-GlobalValue names.
+  if (NameRef.size() > NonGlobalValueMaxNameSize && !isa<GlobalValue>(this))
+    NameRef =
+        NameRef.substr(0, std::max(1u, (unsigned)NonGlobalValueMaxNameSize));
+
   assert(!getType()->isVoidTy() && "Cannot assign a name to void values!");
 
   // Get the symbol table to update for this object.
@@ -409,7 +418,7 @@ void Value::doRAUW(Value *New, bool NoMetadata) {
   if (!NoMetadata && isUsedByMetadata())
     ValueAsMetadata::handleRAUW(this, New);
 
-  while (!use_empty()) {
+  while (!materialized_use_empty()) {
     Use &U = *UseList;
     // Must handle Constants specially, we cannot call replaceUsesOfWith on a
     // constant because they are uniqued.
@@ -619,17 +628,18 @@ const Value *Value::stripInBoundsOffsets() const {
   return stripPointerCastsAndOffsets<PSK_InBounds>(this);
 }
 
-unsigned Value::getPointerDereferenceableBytes(const DataLayout &DL,
+uint64_t Value::getPointerDereferenceableBytes(const DataLayout &DL,
                                                bool &CanBeNull) const {
   assert(getType()->isPointerTy() && "must be pointer");
 
-  unsigned DerefBytes = 0;
+  uint64_t DerefBytes = 0;
   CanBeNull = false;
   if (const Argument *A = dyn_cast<Argument>(this)) {
     DerefBytes = A->getDereferenceableBytes();
-    if (DerefBytes == 0 && A->hasByValAttr() && A->getType()->isSized()) {
-      DerefBytes = DL.getTypeStoreSize(A->getType());
-      CanBeNull = false;
+    if (DerefBytes == 0 && (A->hasByValAttr() || A->hasStructRetAttr())) {
+      Type *PT = cast<PointerType>(A->getType())->getElementType();
+      if (PT->isSized())
+        DerefBytes = DL.getTypeStoreSize(PT);
     }
     if (DerefBytes == 0) {
       DerefBytes = A->getDereferenceableOrNullBytes();
@@ -655,7 +665,7 @@ unsigned Value::getPointerDereferenceableBytes(const DataLayout &DL,
       CanBeNull = true;
     }
   } else if (auto *AI = dyn_cast<AllocaInst>(this)) {
-    if (AI->getAllocatedType()->isSized()) {
+    if (!AI->isArrayAllocation()) {
       DerefBytes = DL.getTypeStoreSize(AI->getAllocatedType());
       CanBeNull = false;
     }

@@ -10,27 +10,27 @@
 /// Rename independent subregisters looks for virtual registers with
 /// independently used subregisters and renames them to new virtual registers.
 /// Example: In the following:
-///   %vreg0:sub0<read-undef> = ...
-///   %vreg0:sub1 = ...
-///   use %vreg0:sub0
-///   %vreg0:sub0 = ...
-///   use %vreg0:sub0
-///   use %vreg0:sub1
+///   %0:sub0<read-undef> = ...
+///   %0:sub1 = ...
+///   use %0:sub0
+///   %0:sub0 = ...
+///   use %0:sub0
+///   use %0:sub1
 /// sub0 and sub1 are never used together, and we have two independent sub0
 /// definitions. This pass will rename to:
-///   %vreg0:sub0<read-undef> = ...
-///   %vreg1:sub1<read-undef> = ...
-///   use %vreg1:sub1
-///   %vreg2:sub1<read-undef> = ...
-///   use %vreg2:sub1
-///   use %vreg0:sub0
+///   %0:sub0<read-undef> = ...
+///   %1:sub1<read-undef> = ...
+///   use %1:sub1
+///   %2:sub1<read-undef> = ...
+///   use %2:sub1
+///   use %0:sub0
 //
 //===----------------------------------------------------------------------===//
 
 #include "LiveRangeUtils.h"
 #include "PHIEliminationUtils.h"
 #include "llvm/CodeGen/LiveInterval.h"
-#include "llvm/CodeGen/LiveIntervalAnalysis.h"
+#include "llvm/CodeGen/LiveIntervals.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"

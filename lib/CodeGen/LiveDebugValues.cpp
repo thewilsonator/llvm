@@ -33,7 +33,6 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
-#include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/PseudoSourceValue.h"
 #include "llvm/CodeGen/TargetFrameLowering.h"
@@ -498,7 +497,7 @@ bool LiveDebugValues::transferTerminatorInst(MachineInstr &MI,
                                              const VarLocMap &VarLocIDs) {
   bool Changed = false;
   const MachineBasicBlock *CurMBB = MI.getParent();
-  if (!(MI.isTerminator() || (&MI == &CurMBB->instr_back())))
+  if (!(MI.isTerminator() || (&MI == &CurMBB->back())))
     return false;
 
   if (OpenRanges.empty())
@@ -704,12 +703,12 @@ bool LiveDebugValues::ExtendRanges(MachineFunction &MF) {
 }
 
 bool LiveDebugValues::runOnMachineFunction(MachineFunction &MF) {
-  if (!MF.getFunction()->getSubprogram())
+  if (!MF.getFunction().getSubprogram())
     // LiveDebugValues will already have removed all DBG_VALUEs.
     return false;
 
   // Skip functions from NoDebug compilation units.
-  if (MF.getFunction()->getSubprogram()->getUnit()->getEmissionKind() ==
+  if (MF.getFunction().getSubprogram()->getUnit()->getEmissionKind() ==
       DICompileUnit::NoDebug)
     return false;
 

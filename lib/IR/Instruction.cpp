@@ -13,11 +13,9 @@
 
 #include "llvm/IR/Instruction.h"
 #include "llvm/ADT/DenseSet.h"
-#include "llvm/IR/CallSite.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/MDBuilder.h"
-#include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/Type.h"
 using namespace llvm;
@@ -589,6 +587,11 @@ bool Instruction::mayThrow() const {
   if (const auto *CatchSwitch = dyn_cast<CatchSwitchInst>(this))
     return CatchSwitch->unwindsToCaller();
   return isa<ResumeInst>(this);
+}
+
+bool Instruction::isSafeToRemove() const {
+  return (!isa<CallInst>(this) || !this->mayHaveSideEffects()) &&
+         !isa<TerminatorInst>(this);
 }
 
 bool Instruction::isAssociative() const {

@@ -57,30 +57,47 @@ const uint32_t *RISCVRegisterInfo::getNoPreservedMask() const {
 void RISCVRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
                                             int SPAdj, unsigned FIOperandNum,
                                             RegScavenger *RS) const {
-  // TODO: this implementation is a temporary placeholder which does just
-  // enough to allow other aspects of code generation to be tested
-
   assert(SPAdj == 0 && "Unexpected non-zero SPAdj value");
 
   MachineInstr &MI = *II;
   MachineFunction &MF = *MI.getParent()->getParent();
-  const TargetFrameLowering *TFI = MF.getSubtarget().getFrameLowering();
+  MachineRegisterInfo &MRI = MF.getRegInfo();
+  const RISCVInstrInfo *TII = MF.getSubtarget<RISCVSubtarget>().getInstrInfo();
   DebugLoc DL = MI.getDebugLoc();
 
-  unsigned FrameReg = getFrameRegister(MF);
   int FrameIndex = MI.getOperand(FIOperandNum).getIndex();
-  int Offset = TFI->getFrameIndexReference(MF, FrameIndex, FrameReg);
-  Offset += MI.getOperand(FIOperandNum + 1).getImm();
+  unsigned FrameReg;
+  int Offset =
+      getFrameLowering(MF)->getFrameIndexReference(MF, FrameIndex, FrameReg) +
+      MI.getOperand(FIOperandNum + 1).getImm();
 
-  assert(TFI->hasFP(MF) && "eliminateFrameIndex currently requires hasFP");
+  assert(MF.getSubtarget().getFrameLowering()->hasFP(MF) &&
+         "eliminateFrameIndex currently requires hasFP");
 
-  // Offsets must be directly encoded in a 12-bit immediate field
-  if (!isInt<12>(Offset)) {
+  if (!isInt<32>(Offset)) {
     report_fatal_error(
-        "Frame offsets outside of the signed 12-bit range not supported");
+        "Frame offsets outside of the signed 32-bit range not supported");
   }
 
-  MI.getOperand(FIOperandNum).ChangeToRegister(FrameReg, false);
+  MachineBasicBlock &MBB = *MI.getParent();
+  bool FrameRegIsKill = false;
+
+  if (!isInt<12>(Offset)) {
+    assert(isInt<32>(Offset) && "Int32 expected");
+    // The offset won't fit in an immediate, so use a scratch register instead
+    // Modify Offset and FrameReg appropriately
+    unsigned ScratchReg = MRI.createVirtualRegister(&RISCV::GPRRegClass);
+    TII->movImm32(MBB, II, DL, ScratchReg, Offset);
+    BuildMI(MBB, II, DL, TII->get(RISCV::ADD), ScratchReg)
+        .addReg(FrameReg)
+        .addReg(ScratchReg, RegState::Kill);
+    Offset = 0;
+    FrameReg = ScratchReg;
+    FrameRegIsKill = true;
+  }
+
+  MI.getOperand(FIOperandNum)
+      .ChangeToRegister(FrameReg, false, false, FrameRegIsKill);
   MI.getOperand(FIOperandNum + 1).ChangeToImmediate(Offset);
 }
 

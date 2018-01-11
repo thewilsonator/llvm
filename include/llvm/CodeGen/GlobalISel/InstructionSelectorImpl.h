@@ -181,7 +181,7 @@ bool InstructionSelector::executeMatchTable(
       else
         llvm_unreachable("Expected Imm or CImm operand");
 
-      if (!MatcherInfo.I64ImmPredicateFns[Predicate](Value))
+      if (!testImmPredicate_I64(Predicate, Value))
         if (handleReject() == RejectAndGiveUp)
           return false;
       break;
@@ -202,7 +202,7 @@ bool InstructionSelector::executeMatchTable(
       else
         llvm_unreachable("Expected Imm or CImm operand");
 
-      if (!MatcherInfo.APIntImmPredicateFns[Predicate](Value))
+      if (!testImmPredicate_APInt(Predicate, Value))
         if (handleReject() == RejectAndGiveUp)
           return false;
       break;
@@ -221,7 +221,7 @@ bool InstructionSelector::executeMatchTable(
       assert(Predicate > GIPFP_APFloat_Invalid && "Expected a valid predicate");
       APFloat Value = State.MIs[InsnID]->getOperand(1).getFPImm()->getValueAPF();
 
-      if (!MatcherInfo.APFloatImmPredicateFns[Predicate](Value))
+      if (!testImmPredicate_APFloat(Predicate, Value))
         if (handleReject() == RejectAndGiveUp)
           return false;
       break;
@@ -240,6 +240,44 @@ bool InstructionSelector::executeMatchTable(
 
       for (const auto &MMO : State.MIs[InsnID]->memoperands())
         if (MMO->getOrdering() != Ordering)
+          if (handleReject() == RejectAndGiveUp)
+            return false;
+      break;
+    }
+    case GIM_CheckAtomicOrderingOrStrongerThan: {
+      int64_t InsnID = MatchTable[CurrentIdx++];
+      AtomicOrdering Ordering = (AtomicOrdering)MatchTable[CurrentIdx++];
+      DEBUG_WITH_TYPE(TgtInstructionSelector::getName(),
+                      dbgs() << CurrentIdx
+                             << ": GIM_CheckAtomicOrderingOrStrongerThan(MIs["
+                             << InsnID << "], " << (uint64_t)Ordering << ")\n");
+      assert(State.MIs[InsnID] != nullptr && "Used insn before defined");
+
+      if (!State.MIs[InsnID]->hasOneMemOperand())
+        if (handleReject() == RejectAndGiveUp)
+          return false;
+
+      for (const auto &MMO : State.MIs[InsnID]->memoperands())
+        if (!isAtLeastOrStrongerThan(MMO->getOrdering(), Ordering))
+          if (handleReject() == RejectAndGiveUp)
+            return false;
+      break;
+    }
+    case GIM_CheckAtomicOrderingWeakerThan: {
+      int64_t InsnID = MatchTable[CurrentIdx++];
+      AtomicOrdering Ordering = (AtomicOrdering)MatchTable[CurrentIdx++];
+      DEBUG_WITH_TYPE(TgtInstructionSelector::getName(),
+                      dbgs() << CurrentIdx
+                             << ": GIM_CheckAtomicOrderingWeakerThan(MIs["
+                             << InsnID << "], " << (uint64_t)Ordering << ")\n");
+      assert(State.MIs[InsnID] != nullptr && "Used insn before defined");
+
+      if (!State.MIs[InsnID]->hasOneMemOperand())
+        if (handleReject() == RejectAndGiveUp)
+          return false;
+
+      for (const auto &MMO : State.MIs[InsnID]->memoperands())
+        if (!isStrongerThan(Ordering, MMO->getOrdering()))
           if (handleReject() == RejectAndGiveUp)
             return false;
       break;

@@ -34,6 +34,7 @@ namespace llvm {
 class BasicBlock;
 class FastMathFlags;
 class MDNode;
+class Module;
 struct AAMDNodes;
 
 template <> struct ilist_alloc_traits<Instruction> {
@@ -534,6 +535,14 @@ public:
   /// matters, isSafeToSpeculativelyExecute may be more appropriate.
   bool mayHaveSideEffects() const { return mayWriteToMemory() || mayThrow(); }
 
+  /// Return true if the instruction can be removed if the result is unused.
+  ///
+  /// When constant folding some instructions cannot be removed even if their
+  /// results are unused. Specifically terminator instructions and calls that
+  /// may have side effects cannot be removed without semantically changing the
+  /// generated program.
+  bool isSafeToRemove() const;
+  
   /// Return true if the instruction is a variety of EH-block.
   bool isEHPad() const {
     switch (getOpcode()) {

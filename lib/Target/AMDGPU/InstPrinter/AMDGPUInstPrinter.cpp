@@ -267,6 +267,9 @@ void AMDGPUInstPrinter::printRegOperand(unsigned RegNo, raw_ostream &O,
   case AMDGPU::FLAT_SCR:
     O << "flat_scratch";
     return;
+  case AMDGPU::XNACK_MASK:
+    O << "xnack_mask";
+    return;
   case AMDGPU::VCC_LO:
     O << "vcc_lo";
     return;
@@ -296,6 +299,12 @@ void AMDGPUInstPrinter::printRegOperand(unsigned RegNo, raw_ostream &O,
     return;
   case AMDGPU::FLAT_SCR_HI:
     O << "flat_scratch_hi";
+    return;
+  case AMDGPU::XNACK_MASK_LO:
+    O << "xnack_mask_lo";
+    return;
+  case AMDGPU::XNACK_MASK_HI:
+    O << "xnack_mask_hi";
     return;
   case AMDGPU::FP_REG:
   case AMDGPU::SP_REG:
@@ -335,25 +344,15 @@ void AMDGPUInstPrinter::printRegOperand(unsigned RegNo, raw_ostream &O,
   } else if (MRI.getRegClass(AMDGPU::VReg_256RegClassID).contains(RegNo)) {
     O << 'v';
     NumRegs = 8;
-  } else if (MRI.getRegClass(AMDGPU::SReg_256RegClassID).contains(RegNo)) {
+  } else if (MRI.getRegClass(AMDGPU::SGPR_256RegClassID).contains(RegNo)) {
     O << 's';
     NumRegs = 8;
   } else if (MRI.getRegClass(AMDGPU::VReg_512RegClassID).contains(RegNo)) {
     O << 'v';
     NumRegs = 16;
-  } else if (MRI.getRegClass(AMDGPU::SReg_512RegClassID).contains(RegNo)) {
+  } else if (MRI.getRegClass(AMDGPU::SGPR_512RegClassID).contains(RegNo)) {
     O << 's';
     NumRegs = 16;
-  } else if (MRI.getRegClass(AMDGPU::TTMP_64RegClassID).contains(RegNo)) {
-    O << "ttmp";
-    NumRegs = 2;
-    // Trap temps start at offset 112. TODO: Get this from tablegen.
-    RegIdx -= 112;
-  } else if (MRI.getRegClass(AMDGPU::TTMP_128RegClassID).contains(RegNo)) {
-    O << "ttmp";
-    NumRegs = 4;
-    // Trap temps start at offset 112. TODO: Get this from tablegen.
-    RegIdx -= 112;
   } else {
     O << getRegisterName(RegNo);
     return;

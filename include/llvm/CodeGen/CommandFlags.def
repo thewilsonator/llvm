@@ -255,6 +255,10 @@ static cl::opt<DebuggerKind> DebuggerTuningOpt(
                clEnumValN(DebuggerKind::LLDB, "lldb", "lldb"),
                clEnumValN(DebuggerKind::SCE, "sce", "SCE targets (e.g. PS4)")));
 
+static cl::opt<bool> EnableStackSizeSection(
+    "stack-size-section",
+    cl::desc("Emit a section containing stack size metadata"), cl::init(false));
+
 // Common utility function tightly tied to the options listed here. Initializes
 // a TargetOptions object with CodeGen flags and returns it.
 static TargetOptions InitTargetOptionsFromCodeGenFlags() {
@@ -281,6 +285,7 @@ static TargetOptions InitTargetOptionsFromCodeGenFlags() {
   Options.UniqueSectionNames = UniqueSectionNames;
   Options.EmulatedTLS = EmulatedTLS;
   Options.ExceptionModel = ExceptionModel;
+  Options.EmitStackSizeSection = EnableStackSizeSection;
 
   Options.MCOptions = InitMCTargetOptionsFromFlags();
 
@@ -319,6 +324,26 @@ LLVM_ATTRIBUTE_UNUSED static std::string getFeaturesStr() {
     Features.AddFeature(MAttrs[i]);
 
   return Features.getString();
+}
+
+LLVM_ATTRIBUTE_UNUSED static std::vector<std::string> getFeatureList() {
+  SubtargetFeatures Features;
+
+  // If user asked for the 'native' CPU, we need to autodetect features.
+  // This is necessary for x86 where the CPU might not support all the
+  // features the autodetected CPU name lists in the target. For example,
+  // not all Sandybridge processors support AVX.
+  if (MCPU == "native") {
+    StringMap<bool> HostFeatures;
+    if (sys::getHostCPUFeatures(HostFeatures))
+      for (auto &F : HostFeatures)
+        Features.AddFeature(F.first(), F.second);
+  }
+
+  for (unsigned i = 0; i != MAttrs.size(); ++i)
+    Features.AddFeature(MAttrs[i]);
+
+  return Features.getFeatures();
 }
 
 /// \brief Set function attributes of functions in Module M based on CPU,

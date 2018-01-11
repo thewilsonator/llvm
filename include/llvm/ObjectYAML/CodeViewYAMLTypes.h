@@ -27,7 +27,7 @@
 namespace llvm {
 
 namespace codeview {
-class TypeTableBuilder;
+class AppendingTypeTableBuilder;
 }
 
 namespace CodeViewYAML {
@@ -47,7 +47,7 @@ struct LeafRecord {
   std::shared_ptr<detail::LeafRecordBase> Leaf;
 
   codeview::CVType
-  toCodeViewRecord(codeview::TypeTableBuilder &Serializer) const;
+  toCodeViewRecord(codeview::AppendingTypeTableBuilder &Serializer) const;
   static Expected<LeafRecord> fromCodeViewRecord(codeview::CVType Type);
 };
 
@@ -58,7 +58,7 @@ ArrayRef<uint8_t> toDebugT(ArrayRef<LeafRecord>, BumpPtrAllocator &Alloc);
 
 } // end namespace llvm
 
-LLVM_YAML_DECLARE_SCALAR_TRAITS(codeview::GUID, true)
+LLVM_YAML_DECLARE_SCALAR_TRAITS(codeview::GUID, QuotingType::Single)
 
 LLVM_YAML_DECLARE_MAPPING_TRAITS(CodeViewYAML::LeafRecord)
 LLVM_YAML_DECLARE_MAPPING_TRAITS(CodeViewYAML::MemberRecord)

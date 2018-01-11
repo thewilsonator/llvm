@@ -52,11 +52,11 @@ bool TargetLowering::isPositionIndependent() const {
 /// so, it sets Chain to the input chain of the tail call.
 bool TargetLowering::isInTailCallPosition(SelectionDAG &DAG, SDNode *Node,
                                           SDValue &Chain) const {
-  const Function *F = DAG.getMachineFunction().getFunction();
+  const Function &F = DAG.getMachineFunction().getFunction();
 
   // Conservatively require the attributes of the call to match those of
   // the return. Ignore noalias because it doesn't affect the call sequence.
-  AttributeList CallerAttrs = F->getAttributes();
+  AttributeList CallerAttrs = F.getAttributes();
   if (AttrBuilder(CallerAttrs, AttributeList::ReturnIndex)
           .removeAttribute(Attribute::NoAlias)
           .hasAttributes())
@@ -1219,6 +1219,12 @@ bool TargetLowering::SimplifyDemandedBits(SDValue Op,
                                                  Op.getValueType(),
                                                  Sign, ShAmt));
       }
+    }
+    // If this is a bitcast, let computeKnownBits handle it.  Only do this on a
+    // recursive call where Known may be useful to the caller.
+    if (Depth > 0) {
+      TLO.DAG.computeKnownBits(Op, Known, Depth);
+      return false;
     }
     break;
   case ISD::ADD:
@@ -2963,7 +2969,7 @@ static SDValue BuildExactSDIV(const TargetLowering &TLI, SDValue Op1, APInt d,
 SDValue TargetLowering::BuildSDIVPow2(SDNode *N, const APInt &Divisor,
                                       SelectionDAG &DAG,
                                       std::vector<SDNode *> *Created) const {
-  AttributeList Attr = DAG.getMachineFunction().getFunction()->getAttributes();
+  AttributeList Attr = DAG.getMachineFunction().getFunction().getAttributes();
   const TargetLowering &TLI = DAG.getTargetLoweringInfo();
   if (TLI.isIntDivCheap(N->getValueType(0), Attr))
     return SDValue(N,0); // Lower SDIV as SDIV
@@ -3797,7 +3803,7 @@ SDValue TargetLowering::getVectorElementPointer(SelectionDAG &DAG,
                                                 SDValue Index) const {
   SDLoc dl(Index);
   // Make sure the index type is big enough to compute in.
-  Index = DAG.getZExtOrTrunc(Index, dl, getPointerTy(DAG.getDataLayout()));
+  Index = DAG.getZExtOrTrunc(Index, dl, VecPtr.getValueType());
 
   EVT EltVT = VecVT.getVectorElementType();
 
@@ -3812,7 +3818,7 @@ SDValue TargetLowering::getVectorElementPointer(SelectionDAG &DAG,
 
   Index = DAG.getNode(ISD::MUL, dl, IdxVT, Index,
                       DAG.getConstant(EltSize, dl, IdxVT));
-  return DAG.getNode(ISD::ADD, dl, IdxVT, Index, VecPtr);
+  return DAG.getNode(ISD::ADD, dl, IdxVT, VecPtr, Index);
 }
 
 //===----------------------------------------------------------------------===//

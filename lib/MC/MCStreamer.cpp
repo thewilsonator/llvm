@@ -49,6 +49,28 @@ void MCTargetStreamer::emitLabel(MCSymbol *Symbol) {}
 
 void MCTargetStreamer::finish() {}
 
+void MCTargetStreamer::changeSection(const MCSection *CurSection,
+                                     MCSection *Section,
+                                     const MCExpr *Subsection,
+                                     raw_ostream &OS) {
+  Section->PrintSwitchToSection(
+      *Streamer.getContext().getAsmInfo(),
+      Streamer.getContext().getObjectFileInfo()->getTargetTriple(), OS,
+      Subsection);
+}
+
+void MCTargetStreamer::emitDwarfFileDirective(StringRef Directive) {
+  Streamer.EmitRawText(Directive);
+}
+
+void MCTargetStreamer::emitValue(const MCExpr *Value) {
+  SmallString<128> Str;
+  raw_svector_ostream OS(Str);
+
+  Value->print(OS, Streamer.getContext().getAsmInfo());
+  Streamer.EmitRawText(OS.str());
+}
+
 void MCTargetStreamer::emitAssignment(MCSymbol *Symbol, const MCExpr *Value) {}
 
 MCStreamer::MCStreamer(MCContext &Ctx)
@@ -162,18 +184,7 @@ void MCStreamer::EmitGPRel32Value(const MCExpr *Value) {
 /// Emit NumBytes bytes worth of the value specified by FillValue.
 /// This implements directives such as '.space'.
 void MCStreamer::emitFill(uint64_t NumBytes, uint8_t FillValue) {
-  for (uint64_t i = 0, e = NumBytes; i != e; ++i)
-    EmitIntValue(FillValue, 1);
-}
-
-void MCStreamer::emitFill(uint64_t NumValues, int64_t Size, int64_t Expr) {
-  int64_t NonZeroSize = Size > 4 ? 4 : Size;
-  Expr &= ~0ULL >> (64 - NonZeroSize * 8);
-  for (uint64_t i = 0, e = NumValues; i != e; ++i) {
-    EmitIntValue(Expr, NonZeroSize);
-    if (NonZeroSize < Size)
-      EmitIntValue(0, Size - NonZeroSize);
-  }
+  emitFill(*MCConstantExpr::create(NumBytes, getContext()), FillValue);
 }
 
 /// The implementation in this class just redirects to emitFill.
@@ -183,8 +194,10 @@ void MCStreamer::EmitZeros(uint64_t NumBytes) {
 
 unsigned MCStreamer::EmitDwarfFileDirective(unsigned FileNo,
                                             StringRef Directory,
-                                            StringRef Filename, unsigned CUID) {
-  return getContext().getDwarfFile(Directory, Filename, FileNo, CUID);
+                                            StringRef Filename,
+                                            MD5::MD5Result *Checksum,
+                                            unsigned CUID) {
+  return getContext().getDwarfFile(Directory, Filename, FileNo, Checksum, CUID);
 }
 
 void MCStreamer::EmitDwarfLocDirective(unsigned FileNo, unsigned Line,
@@ -782,6 +795,8 @@ void MCStreamer::EmitWinCFIEndProlog(SMLoc Loc) {
 void MCStreamer::EmitCOFFSafeSEH(MCSymbol const *Symbol) {
 }
 
+void MCStreamer::EmitCOFFSymbolIndex(MCSymbol const *Symbol) {}
+
 void MCStreamer::EmitCOFFSectionIndex(MCSymbol const *Symbol) {
 }
 
@@ -958,4 +973,33 @@ MCSymbol *MCStreamer::endSection(MCSection *Section) {
   SwitchSection(Section);
   EmitLabel(Sym);
   return Sym;
+}
+
+void MCStreamer::EmitVersionForTarget(const Triple &Target) {
+  if (!Target.isOSBinFormatMachO() || !Target.isOSDarwin())
+    return;
+  // Do we even know the version?
+  if (Target.getOSMajorVersion() == 0)
+    return;
+
+  unsigned Major;
+  unsigned Minor;
+  unsigned Update;
+  MCVersionMinType VersionType;
+  if (Target.isWatchOS()) {
+    VersionType = MCVM_WatchOSVersionMin;
+    Target.getWatchOSVersion(Major, Minor, Update);
+  } else if (Target.isTvOS()) {
+    VersionType = MCVM_TvOSVersionMin;
+    Target.getiOSVersion(Major, Minor, Update);
+  } else if (Target.isMacOSX()) {
+    VersionType = MCVM_OSXVersionMin;
+    if (!Target.getMacOSXVersion(Major, Minor, Update))
+      Major = 0;
+  } else {
+    VersionType = MCVM_IOSVersionMin;
+    Target.getiOSVersion(Major, Minor, Update);
+  }
+  if (Major != 0)
+    EmitVersionMin(VersionType, Major, Minor, Update);
 }

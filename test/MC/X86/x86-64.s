@@ -99,6 +99,10 @@
 // CHECK: shll $2, %eax
         sall $2, %eax
 
+// CHECK: rep movsb
+rep     # comment
+movsb
+
 // CHECK: rep
 // CHECK: insb
         rep;insb
@@ -452,6 +456,12 @@ mov %rdx, %cr8
 mov %rdx, %cr15
 // CHECK: movq	%rdx, %cr15
 // CHECK: encoding: [0x44,0x0f,0x22,0xfa]
+mov %rdx, %dr15
+// CHECK: movq	%rdx, %dr15
+// CHECK: encoding: [0x44,0x0f,0x23,0xfa]
+mov %rdx, %db15
+// CHECK: movq	%rdx, %dr15
+// CHECK: encoding: [0x44,0x0f,0x23,0xfa]
 
 // rdar://8456371 - Handle commutable instructions written backward.
 // CHECK: 	faddp	%st(1)
@@ -1121,10 +1131,10 @@ mov %gs, (%rsi)  // CHECK: movw	%gs, (%rsi) # encoding: [0x8c,0x2e]
 	idiv	0x12345678,%eax
 
 // PR8524
-movd	%rax, %mm5 // CHECK: movd %rax, %mm5 # encoding: [0x48,0x0f,0x6e,0xe8]
-movd	%mm5, %rbx // CHECK: movd %mm5, %rbx # encoding: [0x48,0x0f,0x7e,0xeb]
-movq	%rax, %mm5 // CHECK: movd %rax, %mm5 # encoding: [0x48,0x0f,0x6e,0xe8]
-movq	%mm5, %rbx // CHECK: movd %mm5, %rbx # encoding: [0x48,0x0f,0x7e,0xeb]
+movd	%rax, %mm5 // CHECK: movq %rax, %mm5 # encoding: [0x48,0x0f,0x6e,0xe8]
+movd	%mm5, %rbx // CHECK: movq %mm5, %rbx # encoding: [0x48,0x0f,0x7e,0xeb]
+movq	%rax, %mm5 // CHECK: movq %rax, %mm5 # encoding: [0x48,0x0f,0x6e,0xe8]
+movq	%mm5, %rbx // CHECK: movq %mm5, %rbx # encoding: [0x48,0x0f,0x7e,0xeb]
 
 rex64 // CHECK: rex64 # encoding: [0x48]
 data16 // CHECK: data16 # encoding: [0x66]

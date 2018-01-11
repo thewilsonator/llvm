@@ -956,6 +956,21 @@ void LowerTypeTestsModule::importFunction(Function *F, bool isDefinition) {
     FDecl = Function::Create(F->getFunctionType(), GlobalValue::ExternalLinkage,
                              Name, &M);
     FDecl->setVisibility(Visibility);
+
+    // Delete aliases pointing to this function, they'll be re-created in the
+    // merged output
+    SmallVector<GlobalAlias*, 4> ToErase;
+    for (auto &U : F->uses()) {
+      if (auto *A = dyn_cast<GlobalAlias>(U.getUser())) {
+        Function *AliasDecl = Function::Create(
+            F->getFunctionType(), GlobalValue::ExternalLinkage, "", &M);
+        AliasDecl->takeName(A);
+        A->replaceAllUsesWith(AliasDecl);
+        ToErase.push_back(A);
+      }
+    }
+    for (auto *A : ToErase)
+      A->eraseFromParent();
   } else {
     // Function definition without type metadata, where some other translation
     // unit contained a declaration with type metadata. This normally happens
@@ -1480,38 +1495,25 @@ void LowerTypeTestsModule::buildBitSetsFromDisjointSet(
   for (auto &&MemSet : TypeMembers)
     GLB.addFragment(MemSet);
 
-  // Build the bitsets from this disjoint set.
-  if (Globals.empty() || isa<GlobalVariable>(Globals[0]->getGlobal())) {
-    // Build a vector of global variables with the computed layout.
-    std::vector<GlobalTypeMember *> OrderedGVs(Globals.size());
-    auto OGI = OrderedGVs.begin();
-    for (auto &&F : GLB.Fragments) {
-      for (auto &&Offset : F) {
-        auto GV = dyn_cast<GlobalVariable>(Globals[Offset]->getGlobal());
-        if (!GV)
-          report_fatal_error("Type identifier may not contain both global "
-                             "variables and functions");
-        *OGI++ = Globals[Offset];
-      }
+  // Build a vector of globals with the computed layout.
+  bool IsGlobalSet =
+      Globals.empty() || isa<GlobalVariable>(Globals[0]->getGlobal());
+  std::vector<GlobalTypeMember *> OrderedGTMs(Globals.size());
+  auto OGTMI = OrderedGTMs.begin();
+  for (auto &&F : GLB.Fragments) {
+    for (auto &&Offset : F) {
+      if (IsGlobalSet != isa<GlobalVariable>(Globals[Offset]->getGlobal()))
+        report_fatal_error("Type identifier may not contain both global "
+                           "variables and functions");
+      *OGTMI++ = Globals[Offset];
     }
-
-    buildBitSetsFromGlobalVariables(TypeIds, OrderedGVs);
-  } else {
-    // Build a vector of functions with the computed layout.
-    std::vector<GlobalTypeMember *> OrderedFns(Globals.size());
-    auto OFI = OrderedFns.begin();
-    for (auto &&F : GLB.Fragments) {
-      for (auto &&Offset : F) {
-        auto Fn = dyn_cast<Function>(Globals[Offset]->getGlobal());
-        if (!Fn)
-          report_fatal_error("Type identifier may not contain both global "
-                             "variables and functions");
-        *OFI++ = Globals[Offset];
-      }
-    }
-
-    buildBitSetsFromFunctions(TypeIds, OrderedFns);
   }
+
+  // Build the bitsets from this disjoint set.
+  if (IsGlobalSet)
+    buildBitSetsFromGlobalVariables(TypeIds, OrderedGTMs);
+  else
+    buildBitSetsFromFunctions(TypeIds, OrderedGTMs);
 }
 
 /// Lower all type tests in this module.
@@ -1706,7 +1708,7 @@ bool LowerTypeTestsModule::lower() {
         GlobalTypeMember::create(Alloc, &GO, IsDefinition, IsExported, Types);
     for (MDNode *Type : Types) {
       verifyTypeMDNode(&GO, Type);
-      auto &Info = TypeIdInfo[cast<MDNode>(Type)->getOperand(1)];
+      auto &Info = TypeIdInfo[Type->getOperand(1)];
       Info.Index = ++I;
       Info.RefGlobals.push_back(GTM);
     }
@@ -1816,6 +1818,49 @@ bool LowerTypeTestsModule::lower() {
   }
 
   allocateByteArrays();
+
+  // Parse alias data to replace stand-in function declarations for aliases
+  // with an alias to the intended target.
+  if (ExportSummary) {
+    if (NamedMDNode *AliasesMD = M.getNamedMetadata("aliases")) {
+      for (auto AliasMD : AliasesMD->operands()) {
+        assert(AliasMD->getNumOperands() >= 4);
+        StringRef AliasName =
+            cast<MDString>(AliasMD->getOperand(0))->getString();
+        StringRef Aliasee = cast<MDString>(AliasMD->getOperand(1))->getString();
+
+        if (!ExportedFunctions.count(Aliasee) ||
+            ExportedFunctions[Aliasee].Linkage != CFL_Definition ||
+            !M.getNamedAlias(Aliasee))
+          continue;
+
+        GlobalValue::VisibilityTypes Visibility =
+            static_cast<GlobalValue::VisibilityTypes>(
+                cast<ConstantAsMetadata>(AliasMD->getOperand(2))
+                    ->getValue()
+                    ->getUniqueInteger()
+                    .getZExtValue());
+        bool Weak =
+            static_cast<bool>(cast<ConstantAsMetadata>(AliasMD->getOperand(3))
+                                  ->getValue()
+                                  ->getUniqueInteger()
+                                  .getZExtValue());
+
+        auto *Alias = GlobalAlias::create("", M.getNamedAlias(Aliasee));
+        Alias->setVisibility(Visibility);
+        if (Weak)
+          Alias->setLinkage(GlobalValue::WeakAnyLinkage);
+
+        if (auto *F = M.getFunction(AliasName)) {
+          Alias->takeName(F);
+          F->replaceAllUsesWith(Alias);
+          F->eraseFromParent();
+        } else {
+          Alias->setName(AliasName);
+        }
+      }
+    }
+  }
 
   return true;
 }

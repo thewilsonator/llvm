@@ -1254,29 +1254,51 @@ void TargetLoweringObjectFileCOFF::emitLinkerFlagsForGlobal(
 //                                  Wasm
 //===----------------------------------------------------------------------===//
 
-static void checkWasmComdat(const GlobalValue *GV) {
+static const Comdat *getWasmComdat(const GlobalValue *GV) {
   const Comdat *C = GV->getComdat();
   if (!C)
-    return;
+    return nullptr;
 
-  // TODO(sbc): At some point we may need COMDAT support but currently
-  // they are not supported.
-  report_fatal_error("WebAssembly doesn't support COMDATs, '" + C->getName() +
-                     "' cannot be lowered.");
+  if (C->getSelectionKind() != Comdat::Any)
+    report_fatal_error("WebAssembly COMDATs only support "
+                       "SelectionKind::Any, '" + C->getName() + "' cannot be "
+                       "lowered.");
+
+  return C;
+}
+
+static SectionKind getWasmKindForNamedSection(StringRef Name, SectionKind K) {
+  // If we're told we have function data, then use that.
+  if (K.isText())
+    return SectionKind::getText();
+
+  // Otherwise, ignore whatever section type the generic impl detected and use
+  // a plain data section.
+  return SectionKind::getData();
 }
 
 MCSection *TargetLoweringObjectFileWasm::getExplicitSectionGlobal(
     const GlobalObject *GO, SectionKind Kind, const TargetMachine &TM) const {
   StringRef Name = GO->getSection();
-  checkWasmComdat(GO);
-  return getContext().getWasmSection(Name, SectionKind::getData());
+
+  Kind = getWasmKindForNamedSection(Name, Kind);
+
+  StringRef Group = "";
+  if (const Comdat *C = getWasmComdat(GO)) {
+    Group = C->getName();
+  }
+
+  return getContext().getWasmSection(Name, Kind, Group,
+                                     MCContext::GenericSectionID);
 }
 
 static MCSectionWasm *selectWasmSectionForGlobal(
     MCContext &Ctx, const GlobalObject *GO, SectionKind Kind, Mangler &Mang,
     const TargetMachine &TM, bool EmitUniqueSection, unsigned *NextUniqueID) {
   StringRef Group = "";
-  checkWasmComdat(GO);
+  if (const Comdat *C = getWasmComdat(GO)) {
+    Group = C->getName();
+  }
 
   bool UniqueSectionNames = TM.getUniqueSectionNames();
   SmallString<128> Name = getSectionPrefixForGlobal(Kind);
@@ -1348,6 +1370,18 @@ const MCExpr *TargetLoweringObjectFileWasm::lowerRelativeReference(
 void TargetLoweringObjectFileWasm::InitializeWasm() {
   StaticCtorSection =
       getContext().getWasmSection(".init_array", SectionKind::getData());
-  StaticDtorSection =
-      getContext().getWasmSection(".fini_array", SectionKind::getData());
+}
+
+MCSection *TargetLoweringObjectFileWasm::getStaticCtorSection(
+    unsigned Priority, const MCSymbol *KeySym) const {
+  return Priority == UINT16_MAX ?
+         StaticCtorSection :
+         getContext().getWasmSection(".init_array." + utostr(Priority),
+                                     SectionKind::getData());
+}
+
+MCSection *TargetLoweringObjectFileWasm::getStaticDtorSection(
+    unsigned Priority, const MCSymbol *KeySym) const {
+  llvm_unreachable("@llvm.global_dtors should have been lowered already");
+  return nullptr;
 }

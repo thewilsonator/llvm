@@ -24,6 +24,9 @@
 
   define void @test_constants() { ret void }
 
+  define void @test_inttoptr_s32() { ret void }
+  define void @test_ptrtoint_s32() { ret void }
+
   @a_global = global float 1.0
   define void @test_globals() { ret void }
 
@@ -31,6 +34,7 @@
   define void @test_anyext_s16_32() { ret void }
 
   define void @test_trunc_s32_16() { ret void }
+  define void @test_trunc_s64_32() #0 { ret void }
 
   define void @test_icmp_eq_s32() { ret void }
   define void @test_fcmp_one_s32() #0 { ret void }
@@ -39,6 +43,9 @@
   define void @test_select_s32() { ret void }
 
   define void @test_br() { ret void }
+
+  define void @test_phi_s32() { ret void }
+  define void @test_phi_s64() #0 { ret void }
 
   define void @test_fadd_s32() #0 { ret void }
   define void @test_fadd_s64() #0 { ret void }
@@ -51,6 +58,9 @@
 
   define void @test_fdiv_s32() #0 { ret void }
   define void @test_fdiv_s64() #0 { ret void }
+
+  define void @test_fneg_s32() #0 { ret void }
+  define void @test_fneg_s64() #0 { ret void }
 
   define void @test_soft_fp_s64() #0 { ret void }
 
@@ -80,7 +90,7 @@ body:             |
     %1(s32) = COPY %r1
     %2(s32) = G_ADD %0, %1
     %r0 = COPY %2(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 
 ...
 ---
@@ -106,7 +116,7 @@ body:             |
     %1(s32) = COPY %r1
     %2(s32) = G_SUB %0, %1
     %r0 = COPY %2(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 
 ...
 ---
@@ -132,7 +142,7 @@ body:             |
     %1(s32) = COPY %r1
     %2(s32) = G_MUL %0, %1
     %r0 = COPY %2(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 
 ...
 ---
@@ -158,7 +168,7 @@ body:             |
     %1(s32) = COPY %r1
     %2(s32) = G_SDIV %0, %1
     %r0 = COPY %2(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 
 ...
 ---
@@ -184,7 +194,7 @@ body:             |
     %1(s32) = COPY %r1
     %2(s32) = G_UDIV %0, %1
     %r0 = COPY %2(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 
 ...
 ---
@@ -210,7 +220,7 @@ body:             |
     %1(s32) = COPY %r1
     %2(s32) = G_AND %0, %1
     %r0 = COPY %2(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 
 ...
 ---
@@ -236,7 +246,7 @@ body:             |
     %1(s32) = COPY %r1
     %2(s32) = G_OR %0, %1
     %r0 = COPY %2(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 
 ...
 ---
@@ -262,7 +272,7 @@ body:             |
     %1(s32) = COPY %r1
     %2(s32) = G_XOR %0, %1
     %r0 = COPY %2(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 
 ...
 ---
@@ -288,7 +298,7 @@ body:             |
     %1(s32) = COPY %r1
     %2(s32) = G_LSHR %0, %1
     %r0 = COPY %2(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 
 ...
 ---
@@ -314,7 +324,7 @@ body:             |
     %1(s32) = COPY %r1
     %2(s32) = G_ASHR %0, %1
     %r0 = COPY %2(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 
 ...
 ---
@@ -340,7 +350,7 @@ body:             |
     %1(s32) = COPY %r1
     %2(s32) = G_SHL %0, %1
     %r0 = COPY %2(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 
 ...
 ---
@@ -376,7 +386,7 @@ body:             |
     %3(s8)  = G_LOAD %0 :: (load 1)
     %4(s1)  = G_LOAD %0 :: (load 1)
     %5(p0)  = G_LOAD %0 :: (load 4)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 
 ...
 ---
@@ -418,7 +428,7 @@ body:             |
     G_STORE %5(p0), %0 :: (store 4)
     %6(s64) = COPY %d6
     G_STORE %6(s64), %0 :: (store 8)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 
 ...
 ---
@@ -451,7 +461,7 @@ body:             |
     %4(p0) = G_GEP %2, %3(s32)
     G_STORE %1(s32), %4(p0) :: (store 4)
 
-    BX_RET 14, _
+    BX_RET 14, %noreg
 
 ...
 ---
@@ -477,7 +487,7 @@ body:             |
     %1(s32) = COPY %r1
     %2(p0) = G_GEP %0, %1(s32)
     %r0 = COPY %2(p0)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 ...
 ---
 name:            test_constants
@@ -493,7 +503,45 @@ body:             |
   bb.0:
     %0(s32) = G_CONSTANT 42
     %r0 = COPY %0(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
+...
+---
+name:            test_inttoptr_s32
+# CHECK-LABEL: name: test_inttoptr_s32
+legalized:       true
+regBankSelected: false
+selected:        false
+# CHECK: registers:
+# CHECK: - { id: 0, class: gprb, preferred-register: '' }
+# CHECK: - { id: 1, class: gprb, preferred-register: '' }
+registers:
+  - { id: 0, class: _ }
+  - { id: 1, class: _ }
+body:             |
+  bb.0:
+    %0(s32) = COPY %r0
+    %1(p0) = G_INTTOPTR %0(s32)
+    %r0 = COPY %1(p0)
+    BX_RET 14, %noreg, implicit %r0
+...
+---
+name:            test_ptrtoint_s32
+# CHECK-LABEL: name: test_ptrtoint_s32
+legalized:       true
+regBankSelected: false
+selected:        false
+# CHECK: registers:
+# CHECK: - { id: 0, class: gprb, preferred-register: '' }
+# CHECK: - { id: 1, class: gprb, preferred-register: '' }
+registers:
+  - { id: 0, class: _ }
+  - { id: 1, class: _ }
+body:             |
+  bb.0:
+    %0(p0) = COPY %r0
+    %1(s32) = G_PTRTOINT %0(p0)
+    %r0 = COPY %1(s32)
+    BX_RET 14, %noreg, implicit %r0
 ...
 ---
 name:            test_globals
@@ -509,7 +557,7 @@ body:             |
   bb.0:
     %0(p0) = G_GLOBAL_VALUE @a_global
     %r0 = COPY %0(p0)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 ...
 ---
 name:            test_anyext_s8_32
@@ -533,7 +581,7 @@ body:             |
     %1(s8) = G_TRUNC %0(s32)
     %2(s32) = G_ANYEXT %1(s8)
     %r0 = COPY %2(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 ...
 ---
 name:            test_anyext_s16_32
@@ -557,7 +605,7 @@ body:             |
     %1(s16) = G_TRUNC %0(s32)
     %2(s32) = G_ANYEXT %1(s16)
     %r0 = COPY %2(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 ...
 ---
 name:            test_trunc_s32_16
@@ -581,7 +629,31 @@ body:             |
     %2(p0) = COPY %r1
     %1(s16) = G_TRUNC %0(s32)
     G_STORE %1(s16), %2 :: (store 2)
-    BX_RET 14, _
+    BX_RET 14, %noreg
+...
+---
+name:            test_trunc_s64_32
+# CHECK-LABEL: name: test_trunc_s64_32
+legalized:       true
+regBankSelected: false
+selected:        false
+# CHECK: registers:
+# CHECK: - { id: 0, class: fprb, preferred-register: '' }
+# CHECK: - { id: 1, class: gprb, preferred-register: '' }
+# CHECK: - { id: 2, class: gprb, preferred-register: '' }
+registers:
+  - { id: 0, class: _ }
+  - { id: 1, class: _ }
+  - { id: 2, class: _ }
+body:             |
+  bb.0:
+    liveins: %r0, %d0
+
+    %0(s64) = COPY %d0
+    %2(p0) = COPY %r0
+    %1(s32) = G_TRUNC %0(s64)
+    G_STORE %1(s32), %2 :: (store 4)
+    BX_RET 14, %noreg
 ...
 ---
 name:            test_icmp_eq_s32
@@ -609,7 +681,7 @@ body:             |
     %2(s1) = G_ICMP intpred(eq), %0(s32), %1
     %3(s32) = G_ZEXT %2(s1)
     %r0 = COPY %3(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 
 ...
 ---
@@ -638,7 +710,7 @@ body:             |
     %2(s1) = G_FCMP floatpred(one), %0(s32), %1
     %3(s32) = G_ZEXT %2(s1)
     %r0 = COPY %3(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 
 ...
 ---
@@ -667,7 +739,7 @@ body:             |
     %2(s1) = G_FCMP floatpred(ugt), %0(s64), %1
     %3(s32) = G_ZEXT %2(s1)
     %r0 = COPY %3(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 
 ...
 ---
@@ -699,7 +771,7 @@ body:             |
     %3(s1) = G_TRUNC %2(s32)
     %4(s32) = G_SELECT %3(s1), %0, %1
     %r0 = COPY %4(s32)
-    BX_RET 14, _, implicit %r0
+    BX_RET 14, %noreg, implicit %r0
 
 ...
 ---
@@ -727,11 +799,93 @@ body:             |
     G_BR %bb.2
 
   bb.1:
-    BX_RET 14, _
+    BX_RET 14, %noreg
 
   bb.2:
-    BX_RET 14, _
+    BX_RET 14, %noreg
 
+...
+---
+name:            test_phi_s32
+# CHECK-LABEL: name: test_phi_s32
+legalized:       true
+regBankSelected: false
+# CHECK: regBankSelected: true
+selected:        false
+tracksRegLiveness: true
+registers:
+  - { id: 0, class: _ }
+  - { id: 1, class: _ }
+  - { id: 2, class: _ }
+  - { id: 3, class: _ }
+  - { id: 4, class: _ }
+# CHECK: { id: 0, class: gprb, preferred-register: '' }
+# CHECK: { id: 1, class: gprb, preferred-register: '' }
+# CHECK: { id: 2, class: gprb, preferred-register: '' }
+# CHECK: { id: 3, class: gprb, preferred-register: '' }
+# CHECK: { id: 4, class: gprb, preferred-register: '' }
+body:             |
+  bb.0:
+    successors: %bb.1(0x40000000), %bb.2(0x40000000)
+    liveins: %r0, %r1, %r2
+
+    %0(s32) = COPY %r0
+    %1(s1) = G_TRUNC %0(s32)
+
+    %2(s32) = COPY %r1
+    %3(s32) = COPY %r2
+
+    G_BRCOND %1(s1), %bb.1
+    G_BR %bb.2
+
+  bb.1:
+    successors: %bb.2(0x80000000)
+
+  bb.2:
+    %4(s32) = G_PHI %2(s32), %bb.0, %3(s32), %bb.1
+    %r0 = COPY %4(s32)
+    BX_RET 14, %noreg, implicit %r0
+...
+---
+name:            test_phi_s64
+# CHECK-LABEL: name: test_phi_s64
+legalized:       true
+regBankSelected: false
+# CHECK: regBankSelected: true
+selected:        false
+tracksRegLiveness: true
+registers:
+  - { id: 0, class: _ }
+  - { id: 1, class: _ }
+  - { id: 2, class: _ }
+  - { id: 3, class: _ }
+  - { id: 4, class: _ }
+# CHECK: { id: 0, class: gprb, preferred-register: '' }
+# CHECK: { id: 1, class: gprb, preferred-register: '' }
+# CHECK: { id: 2, class: fprb, preferred-register: '' }
+# CHECK: { id: 3, class: fprb, preferred-register: '' }
+# CHECK: { id: 4, class: fprb, preferred-register: '' }
+body:             |
+  bb.0:
+    successors: %bb.1(0x40000000), %bb.2(0x40000000)
+    liveins: %r0, %d0, %d1
+
+    %0(s32) = COPY %r0
+    %1(s1) = G_TRUNC %0(s32)
+
+    %2(s64) = COPY %d0
+    %3(s64) = COPY %d1
+
+    G_BRCOND %1(s1), %bb.1
+    G_BR %bb.2
+
+  bb.1:
+    successors: %bb.2(0x80000000)
+
+  bb.2:
+    %4(s64) = G_PHI %2(s64), %bb.0, %3(s64), %bb.1
+    %d0 = COPY %4(s64)
+    BX_RET 14, %noreg, implicit %d0
 ...
 ---
 name:            test_fadd_s32
@@ -756,7 +910,7 @@ body:             |
     %1(s32) = COPY %s1
     %2(s32) = G_FADD %0, %1
     %s0 = COPY %2(s32)
-    BX_RET 14, _, implicit %s0
+    BX_RET 14, %noreg, implicit %s0
 
 ...
 ---
@@ -782,7 +936,7 @@ body:             |
     %1(s64) = COPY %d1
     %2(s64) = G_FADD %0, %1
     %d0 = COPY %2(s64)
-    BX_RET 14, _, implicit %d0
+    BX_RET 14, %noreg, implicit %d0
 
 ...
 ---
@@ -808,7 +962,7 @@ body:             |
     %1(s32) = COPY %s1
     %2(s32) = G_FSUB %0, %1
     %s0 = COPY %2(s32)
-    BX_RET 14, _, implicit %s0
+    BX_RET 14, %noreg, implicit %s0
 
 ...
 ---
@@ -834,7 +988,7 @@ body:             |
     %1(s64) = COPY %d1
     %2(s64) = G_FSUB %0, %1
     %d0 = COPY %2(s64)
-    BX_RET 14, _, implicit %d0
+    BX_RET 14, %noreg, implicit %d0
 
 ...
 ---
@@ -860,7 +1014,7 @@ body:             |
     %1(s32) = COPY %s1
     %2(s32) = G_FMUL %0, %1
     %s0 = COPY %2(s32)
-    BX_RET 14, _, implicit %s0
+    BX_RET 14, %noreg, implicit %s0
 
 ...
 ---
@@ -886,7 +1040,7 @@ body:             |
     %1(s64) = COPY %d1
     %2(s64) = G_FMUL %0, %1
     %d0 = COPY %2(s64)
-    BX_RET 14, _, implicit %d0
+    BX_RET 14, %noreg, implicit %d0
 
 ...
 ---
@@ -912,7 +1066,7 @@ body:             |
     %1(s32) = COPY %s1
     %2(s32) = G_FDIV %0, %1
     %s0 = COPY %2(s32)
-    BX_RET 14, _, implicit %s0
+    BX_RET 14, %noreg, implicit %s0
 
 ...
 ---
@@ -938,7 +1092,53 @@ body:             |
     %1(s64) = COPY %d1
     %2(s64) = G_FDIV %0, %1
     %d0 = COPY %2(s64)
-    BX_RET 14, _, implicit %d0
+    BX_RET 14, %noreg, implicit %d0
+
+...
+---
+name:            test_fneg_s32
+# CHECK-LABEL: name: test_fneg_s32
+legalized:       true
+regBankSelected: false
+selected:        false
+# CHECK: registers:
+# CHECK: - { id: 0, class: fprb, preferred-register: '' }
+# CHECK: - { id: 1, class: fprb, preferred-register: '' }
+
+registers:
+  - { id: 0, class: _ }
+  - { id: 1, class: _ }
+body:             |
+  bb.0:
+    liveins: %s0
+
+    %0(s32) = COPY %s0
+    %1(s32) = G_FNEG %0
+    %s0 = COPY %1(s32)
+    BX_RET 14, %noreg, implicit %s0
+
+...
+---
+name:            test_fneg_s64
+# CHECK-LABEL: name: test_fneg_s64
+legalized:       true
+regBankSelected: false
+selected:        false
+# CHECK: registers:
+# CHECK: - { id: 0, class: fprb, preferred-register: '' }
+# CHECK: - { id: 1, class: fprb, preferred-register: '' }
+
+registers:
+  - { id: 0, class: _ }
+  - { id: 1, class: _ }
+body:             |
+  bb.0:
+    liveins: %d0
+
+    %0(s64) = COPY %d0
+    %1(s64) = G_FNEG %0
+    %d0 = COPY %1(s64)
+    BX_RET 14, %noreg, implicit %d0
 
 ...
 ---
@@ -970,6 +1170,6 @@ body:             |
     %3(s32), %4(s32) = G_UNMERGE_VALUES %2(s64)
     %r0 = COPY %3(s32)
     %r1 = COPY %4(s32)
-    BX_RET 14, _, implicit %r0, implicit %r1
+    BX_RET 14, %noreg, implicit %r0, implicit %r1
 
 ...

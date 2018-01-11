@@ -18,6 +18,7 @@
 #include "llvm/Object/ELFObjectFile.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileOutputBuffer.h"
+#include "llvm/Support/Path.h"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -81,6 +82,11 @@ void Section::writeSection(FileOutputBuffer &Out) const {
   std::copy(std::begin(Contents), std::end(Contents), Buf);
 }
 
+void OwnedDataSection::writeSection(FileOutputBuffer &Out) const {
+  uint8_t *Buf = Out.getBufferStart() + Offset;
+  std::copy(std::begin(Data), std::end(Data), Buf);
+}
+
 void StringTableSection::addString(StringRef Name) {
   StrTabBuilder.add(Name);
   Size = StrTabBuilder.getSize();
@@ -136,7 +142,8 @@ uint16_t Symbol::getShndx() const {
 
 void SymbolTableSection::addSymbol(StringRef Name, uint8_t Bind, uint8_t Type,
                                    SectionBase *DefinedIn, uint64_t Value,
-                                   uint16_t Shndx, uint64_t Sz) {
+                                   uint8_t Visibility, uint16_t Shndx,
+                                   uint64_t Sz) {
   Symbol Sym;
   Sym.Name = Name;
   Sym.Binding = Bind;
@@ -149,6 +156,7 @@ void SymbolTableSection::addSymbol(StringRef Name, uint8_t Bind, uint8_t Type,
       Sym.ShndxType = SYMBOL_SIMPLE_INDEX;
   }
   Sym.Value = Value;
+  Sym.Visibility = Visibility;
   Sym.Size = Sz;
   Sym.Index = Symbols.size();
   Symbols.emplace_back(llvm::make_unique<Symbol>(Sym));
@@ -166,6 +174,25 @@ void SymbolTableSection::removeSectionReferences(const SectionBase *Sec) {
                      [=](const SymPtr &Sym) { return Sym->DefinedIn == Sec; });
   Size -= (std::end(Symbols) - Iter) * this->EntrySize;
   Symbols.erase(Iter, std::end(Symbols));
+}
+
+void SymbolTableSection::localize(
+    std::function<bool(const Symbol &)> ToLocalize) {
+  for (const auto &Sym : Symbols) {
+    if (ToLocalize(*Sym))
+      Sym->Binding = STB_LOCAL;
+  }
+
+  // Now that the local symbols aren't grouped at the start we have to reorder
+  // the symbols to respect this property.
+  std::stable_partition(
+      std::begin(Symbols), std::end(Symbols),
+      [](const SymPtr &Sym) { return Sym->Binding == STB_LOCAL; });
+
+  // Lastly we fix the symbol indexes.
+  uint32_t Index = 0;
+  for (auto &Sym : Symbols)
+    Sym->Index = Index++;
 }
 
 void SymbolTableSection::initialize(SectionTableRef SecTable) {
@@ -216,6 +243,7 @@ void SymbolTableSectionImpl<ELFT>::writeSection(FileOutputBuffer &Out) const {
     Sym->st_name = Symbol->NameIndex;
     Sym->st_value = Symbol->Value;
     Sym->st_size = Symbol->Size;
+    Sym->st_other = Symbol->Visibility;
     Sym->setBinding(Symbol->Binding);
     Sym->setType(Symbol->Type);
     Sym->st_shndx = Symbol->getShndx();
@@ -227,10 +255,9 @@ template <class SymTabType>
 void RelocSectionWithSymtabBase<SymTabType>::removeSectionReferences(
     const SectionBase *Sec) {
   if (Symbols == Sec) {
-    error("Symbol table " + Symbols->Name +
-          " cannot be removed because it is "
-          "referenced by the relocation "
-          "section " +
+    error("Symbol table " + Symbols->Name + " cannot be removed because it is "
+                                            "referenced by the relocation "
+                                            "section " +
           this->Name);
   }
 }
@@ -245,9 +272,9 @@ void RelocSectionWithSymtabBase<SymTabType>::initialize(
           " is not a symbol table"));
 
   if (Info != SHN_UNDEF)
-    setSection(SecTable.getSection(Info, "Info field value " + Twine(Info) +
-                                             " in section " + Name +
-                                             " is invalid"));
+    setSection(SecTable.getSection(Info,
+                                   "Info field value " + Twine(Info) +
+                                       " in section " + Name + " is invalid"));
   else
     setSection(nullptr);
 }
@@ -294,9 +321,8 @@ void DynamicRelocationSection::writeSection(FileOutputBuffer &Out) const {
 
 void SectionWithStrTab::removeSectionReferences(const SectionBase *Sec) {
   if (StrTab == Sec) {
-    error("String table " + StrTab->Name +
-          " cannot be removed because it is "
-          "referenced by the section " +
+    error("String table " + StrTab->Name + " cannot be removed because it is "
+                                           "referenced by the section " +
           this->Name);
   }
 }
@@ -306,9 +332,9 @@ bool SectionWithStrTab::classof(const SectionBase *S) {
 }
 
 void SectionWithStrTab::initialize(SectionTableRef SecTable) {
-  auto StrTab =
-      SecTable.getSection(Link, "Link field value " + Twine(Link) +
-                                    " in section " + Name + " is invalid");
+  auto StrTab = SecTable.getSection(Link,
+                                    "Link field value " + Twine(Link) +
+                                        " in section " + Name + " is invalid");
   if (StrTab->Type != SHT_STRTAB) {
     error("Link field value " + Twine(Link) + " in section " + Name +
           " is not a string table");
@@ -317,6 +343,50 @@ void SectionWithStrTab::initialize(SectionTableRef SecTable) {
 }
 
 void SectionWithStrTab::finalize() { this->Link = StrTab->Index; }
+
+template <class ELFT>
+void GnuDebugLinkSection<ELFT>::init(StringRef File, StringRef Data) {
+  FileName = sys::path::stem(File);
+  // The format for the .gnu_debuglink starts with the stemmed file name and is
+  // followed by a null terminator and then the CRC32 of the file. The CRC32
+  // should be 4 byte aligned. So we add the FileName size, a 1 for the null
+  // byte, and then finally push the size to alignment and add 4.
+  Size = alignTo(FileName.size() + 1, 4) + 4;
+  // The CRC32 will only be aligned if we align the whole section.
+  Align = 4;
+  Type = ELF::SHT_PROGBITS;
+  Name = ".gnu_debuglink";
+  // For sections not found in segments, OriginalOffset is only used to
+  // establish the order that sections should go in. By using the maximum
+  // possible offset we cause this section to wind up at the end.
+  OriginalOffset = std::numeric_limits<uint64_t>::max();
+  JamCRC crc;
+  crc.update(ArrayRef<char>(Data.data(), Data.size()));
+  // The CRC32 value needs to be complemented because the JamCRC dosn't
+  // finalize the CRC32 value. It also dosn't negate the initial CRC32 value
+  // but it starts by default at 0xFFFFFFFF which is the complement of zero.
+  CRC32 = ~crc.getCRC();
+}
+
+template <class ELFT>
+GnuDebugLinkSection<ELFT>::GnuDebugLinkSection(StringRef File)
+    : FileName(File) {
+  // Read in the file to compute the CRC of it.
+  auto DebugOrErr = MemoryBuffer::getFile(File);
+  if (!DebugOrErr)
+    error("'" + File + "': " + DebugOrErr.getError().message());
+  auto Debug = std::move(*DebugOrErr);
+  init(File, Debug->getBuffer());
+}
+
+template <class ELFT>
+void GnuDebugLinkSection<ELFT>::writeSection(FileOutputBuffer &Out) const {
+  auto Buf = Out.getBufferStart() + Offset;
+  char *File = reinterpret_cast<char *>(Buf);
+  Elf_Word *CRC = reinterpret_cast<Elf_Word *>(Buf + Size - sizeof(Elf_Word));
+  *CRC = CRC32;
+  std::copy(std::begin(FileName), std::end(FileName), File);
+}
 
 // Returns true IFF a section is wholly inside the range of a segment
 static bool sectionWithinSegment(const SectionBase &Section,
@@ -416,13 +486,13 @@ void Object<ELFT>::initSymbolTable(const object::ELFFile<ELFT> &ElfFile,
       }
     } else if (Sym.st_shndx != SHN_UNDEF) {
       DefSection = SecTable.getSection(
-          Sym.st_shndx, "Symbol '" + Name +
-                            "' is defined in invalid section with index " +
-                            Twine(Sym.st_shndx));
+          Sym.st_shndx,
+          "Symbol '" + Name + "' is defined in invalid section with index " +
+              Twine(Sym.st_shndx));
     }
 
     SymTab->addSymbol(Name, Sym.getBinding(), Sym.getType(), DefSection,
-                      Sym.getValue(), Sym.st_shndx, Sym.st_size);
+                      Sym.getValue(), Sym.st_other, Sym.st_shndx, Sym.st_size);
   }
 }
 
@@ -676,6 +746,17 @@ void Object<ELFT>::removeSections(
   }
   // Now finally get rid of them all togethor.
   Sections.erase(Iter, std::end(Sections));
+}
+
+template <class ELFT>
+void Object<ELFT>::addSection(StringRef SecName, ArrayRef<uint8_t> Data) {
+  auto Sec = llvm::make_unique<OwnedDataSection>(SecName, Data);
+  Sec->OriginalOffset = ~0ULL;
+  Sections.push_back(std::move(Sec));
+}
+
+template <class ELFT> void Object<ELFT>::addGnuDebugLink(StringRef File) {
+  Sections.emplace_back(llvm::make_unique<GnuDebugLinkSection<ELFT>>(File));
 }
 
 template <class ELFT> void ELFObject<ELFT>::sortSections() {

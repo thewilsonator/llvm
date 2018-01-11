@@ -73,6 +73,7 @@ class OptimizationRemarkEmitter;
 class SDDbgValue;
 class SelectionDAG;
 class SelectionDAGTargetInfo;
+class TargetLibraryInfo;
 class TargetLowering;
 class TargetMachine;
 class TargetSubtargetInfo;
@@ -210,6 +211,7 @@ class SelectionDAG {
   const TargetMachine &TM;
   const SelectionDAGTargetInfo *TSI = nullptr;
   const TargetLowering *TLI = nullptr;
+  const TargetLibraryInfo *LibInfo = nullptr;
   MachineFunction *MF;
   Pass *SDAGISelPass = nullptr;
   LLVMContext *Context;
@@ -376,7 +378,7 @@ public:
 
   /// Prepare this SelectionDAG to process code in the given MachineFunction.
   void init(MachineFunction &NewMF, OptimizationRemarkEmitter &NewORE,
-            Pass *PassPtr);
+            Pass *PassPtr, const TargetLibraryInfo *LibraryInfo);
 
   /// Clear state and free memory necessary to make this
   /// SelectionDAG ready to process a new block.
@@ -389,6 +391,7 @@ public:
   const TargetMachine &getTarget() const { return TM; }
   const TargetSubtargetInfo &getSubtarget() const { return MF->getSubtarget(); }
   const TargetLowering &getTargetLoweringInfo() const { return *TLI; }
+  const TargetLibraryInfo &getLibInfo() const { return *LibInfo; }
   const SelectionDAGTargetInfo &getSelectionDAGInfo() const { return *TSI; }
   LLVMContext *getContext() const {return Context; }
   OptimizationRemarkEmitter &getORE() const { return *ORE; }
@@ -988,11 +991,14 @@ public:
   /// result and takes a list of operands. Opcode may be INTRINSIC_VOID,
   /// INTRINSIC_W_CHAIN, or a target-specific opcode with a value not
   /// less than FIRST_TARGET_MEMORY_OPCODE.
-  SDValue getMemIntrinsicNode(unsigned Opcode, const SDLoc &dl, SDVTList VTList,
-                              ArrayRef<SDValue> Ops, EVT MemVT,
-                              MachinePointerInfo PtrInfo, unsigned Align = 0,
-                              bool Vol = false, bool ReadMem = true,
-                              bool WriteMem = true, unsigned Size = 0);
+  SDValue getMemIntrinsicNode(
+    unsigned Opcode, const SDLoc &dl, SDVTList VTList,
+    ArrayRef<SDValue> Ops, EVT MemVT,
+    MachinePointerInfo PtrInfo,
+    unsigned Align = 0,
+    MachineMemOperand::Flags Flags
+    = MachineMemOperand::MOLoad | MachineMemOperand::MOStore,
+    unsigned Size = 0);
 
   SDValue getMemIntrinsicNode(unsigned Opcode, const SDLoc &dl, SDVTList VTList,
                               ArrayRef<SDValue> Ops, EVT MemVT,
@@ -1247,7 +1253,7 @@ public:
   void ReplaceAllUsesWith(SDNode *From, const SDValue *To);
 
   /// Replace any uses of From with To, leaving
-  /// uses of other values produced by From.Val alone.
+  /// uses of other values produced by From.getNode() alone.
   void ReplaceAllUsesOfValueWith(SDValue From, SDValue To);
 
   /// Like ReplaceAllUsesOfValueWith, but for multiple values at once.

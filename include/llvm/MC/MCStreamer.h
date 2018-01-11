@@ -23,6 +23,7 @@
 #include "llvm/MC/MCLinkerOptimizationHint.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCWinEH.h"
+#include "llvm/Support/MD5.h"
 #include "llvm/Support/SMLoc.h"
 #include "llvm/Support/TargetParser.h"
 #include <cassert>
@@ -94,6 +95,17 @@ public:
 
   virtual void prettyPrintAsm(MCInstPrinter &InstPrinter, raw_ostream &OS,
                               const MCInst &Inst, const MCSubtargetInfo &STI);
+
+  virtual void emitDwarfFileDirective(StringRef Directive);
+
+  /// Update streamer for a new active section.
+  ///
+  /// This is called by PopSection and SwitchSection, if the current
+  /// section changes.
+  virtual void changeSection(const MCSection *CurSection, MCSection *Section,
+                             const MCExpr *SubSection, raw_ostream &OS);
+
+  virtual void emitValue(const MCExpr *Value);
 
   virtual void finish();
 };
@@ -421,9 +433,16 @@ public:
   /// \brief Note in the output the specified region \p Kind.
   virtual void EmitDataRegion(MCDataRegionType Kind) {}
 
-  /// \brief Specify the MachO minimum deployment target version.
-  virtual void EmitVersionMin(MCVersionMinType, unsigned Major, unsigned Minor,
-                              unsigned Update) {}
+  /// \brief Specify the Mach-O minimum deployment target version.
+  virtual void EmitVersionMin(MCVersionMinType Type, unsigned Major,
+                              unsigned Minor, unsigned Update) {}
+
+  /// Emit/Specify Mach-O build version command.
+  /// \p Platform should be one of MachO::PlatformType.
+  virtual void EmitBuildVersion(unsigned Platform, unsigned Major,
+                                unsigned Minor, unsigned Update) {}
+
+  void EmitVersionForTarget(const Triple &Target);
 
   /// \brief Note in the output that the specified \p Func is a Thumb mode
   /// function (ARM target only).
@@ -480,6 +499,9 @@ public:
   virtual void EndCOFFSymbolDef();
 
   virtual void EmitCOFFSafeSEH(MCSymbol const *Symbol);
+
+  /// \brief Emits the symbol table index of a Symbol into the current section.
+  virtual void EmitCOFFSymbolIndex(MCSymbol const *Symbol);
 
   /// \brief Emits a COFF section index.
   ///
@@ -644,7 +666,7 @@ public:
 
   /// \brief Emit NumBytes bytes worth of the value specified by FillValue.
   /// This implements directives such as '.space'.
-  virtual void emitFill(uint64_t NumBytes, uint8_t FillValue);
+  void emitFill(uint64_t NumBytes, uint8_t FillValue);
 
   /// \brief Emit \p Size bytes worth of the value specified by \p FillValue.
   ///
@@ -664,7 +686,6 @@ public:
   /// \param NumValues - The number of copies of \p Size bytes to emit.
   /// \param Size - The size (in bytes) of each repeated value.
   /// \param Expr - The expression from which \p Size bytes are used.
-  virtual void emitFill(uint64_t NumValues, int64_t Size, int64_t Expr);
   virtual void emitFill(const MCExpr &NumValues, int64_t Size, int64_t Expr,
                         SMLoc Loc = SMLoc());
 
@@ -737,6 +758,7 @@ public:
   /// implements the DWARF2 '.file 4 "foo.c"' assembler directive.
   virtual unsigned EmitDwarfFileDirective(unsigned FileNo, StringRef Directory,
                                           StringRef Filename,
+                                          MD5::MD5Result *Checksum = nullptr,
                                           unsigned CUID = 0);
 
   /// \brief This implements the DWARF2 '.loc fileno lineno ...' assembler

@@ -189,8 +189,8 @@ public:
   inline bool isUndef() const;
   inline unsigned getMachineOpcode() const;
   inline const DebugLoc &getDebugLoc() const;
-  inline void dump() const;
-  inline void dumpr() const;
+  inline void dump(const SelectionDAG *G = nullptr) const;
+  inline void dumpr(const SelectionDAG *G = nullptr) const;
 
   /// Return true if this operand (which must be a chain) reaches the
   /// specified operand without crossing any side-effecting instructions.
@@ -1089,12 +1089,12 @@ inline const DebugLoc &SDValue::getDebugLoc() const {
   return Node->getDebugLoc();
 }
 
-inline void SDValue::dump() const {
-  return Node->dump();
+inline void SDValue::dump(const SelectionDAG *G) const {
+  return Node->dump(G);
 }
 
-inline void SDValue::dumpr() const {
-  return Node->dumpr();
+inline void SDValue::dumpr(const SelectionDAG *G) const {
+  return Node->dumpr(G);
 }
 
 // Define inline functions from the SDUse class.
@@ -2120,13 +2120,14 @@ public:
       : MemSDNode(NodeTy, Order, dl, VTs, MemVT, MMO) {}
 
   // In the both nodes address is Op1, mask is Op2:
-  // MaskedGatherSDNode  (Chain, src0, mask, base, index), src0 is a passthru value
-  // MaskedScatterSDNode (Chain, value, mask, base, index)
+  // MaskedGatherSDNode  (Chain, passthru, mask, base, index, scale)
+  // MaskedScatterSDNode (Chain, value, mask, base, index, scale)
   // Mask is a vector of i1 elements
   const SDValue &getBasePtr() const { return getOperand(3); }
   const SDValue &getIndex()   const { return getOperand(4); }
   const SDValue &getMask()    const { return getOperand(2); }
   const SDValue &getValue()   const { return getOperand(1); }
+  const SDValue &getScale()   const { return getOperand(5); }
 
   static bool classof(const SDNode *N) {
     return N->getOpcode() == ISD::MGATHER ||
