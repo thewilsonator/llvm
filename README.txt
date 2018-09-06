@@ -1,3 +1,15 @@
+Please use the release70 branch and clone
+
+https://github.com/thewilsonator/llvm-target-spirv into
+lib/Target/SPIRV
+
+and 
+
+https://github.com/thewilsonator/llvm-tool-spirv into
+tools/
+
+This is a change from before where the above were git submodules
+
 Low Level Virtual Machine (LLVM)
 ================================
 
