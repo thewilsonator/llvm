@@ -319,6 +319,7 @@ set(LLVM_ALL_TARGETS
   NVPTX
   PowerPC
   Sparc
+  SPIRV
   SystemZ
   X86
   XCore
